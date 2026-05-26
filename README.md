@@ -1,3 +1,6 @@
+<img width="1892" height="1005" alt="image" src="https://github.com/user-attachments/assets/f36c4261-e80d-471b-a60f-6f824a7964ec" />
+
+
 # Global Threat Monitor
 
 A completely useless Hollywood-style cyber threat dashboard for your terminal.
@@ -95,9 +98,10 @@ macOS:   ~/.config/global-threat-monitor/config.json
 
 This is not a cybersecurity tool.
 This is fake.
-Do not use it to assess security posture, impress auditors, diagnose incidents, or convince management that the blinking red thing means progress.
+All displayed activity is randomly generated nonsense and should be treated as such.
 
-All displayed activity is randomly generated simulation data.
+Do not use it to assess security posture, impress auditors, diagnose incidents, or convince management that the blinking red thing means progress.
+Or do, but in that case, it is between you, your conscience, and the very tired incident response team that will eventually be asked why the DNA decrypter panel is not in Splunk.
 
 ## Disclaimer 2
 
@@ -105,7 +109,7 @@ I did not write a single line of code on this. Because burning forests and expen
 
 ## Disclaimer 3
 
-If you can find anything weird in it, Gemini 3.5 flash high injected it. Take it up with Google.
+If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take it up with Google.
 
 ## License
 
