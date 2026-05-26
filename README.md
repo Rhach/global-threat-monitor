@@ -13,11 +13,15 @@ It just looks like it might, which is somehow enough for the human visual cortex
 
 - Fullscreen terminal dashboard
 - Animated world-map attack vectors
-- Fake threat logs
+- Fake threat logs with Hollywood-style technical jargon
 - Fake subnet port sweeper
 - Fake tunnel manager
 - Fake password/decryption panel
 - Fake biometric/DNA override animation
+- Mathematically projected live 3D rotating wireframe hypercube matrix
+- Interactive "Hacker Shell Mode" (triggered by `C` key)
+- Emergency "Gibson Breach Meltdown Mode" (triggered by `G` key)
+- Dynamic "Hacker Intensity Field" tracking key slam speed
 - Multiple color themes
 - Optional sound chimes on Windows
 - Cross-platform terminal support
@@ -69,6 +73,8 @@ T         Cycle theme
 P         Pause / resume
 S         Toggle sound
 A         Trigger fake attack
+C         Initiate Direct Backdoor Shell override
+G         Initiate critical mainframe breach event
 + / =     Increase speed
 -         Decrease speed
 ```

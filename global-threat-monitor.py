@@ -262,6 +262,66 @@ MOCK_CODE = [
     "SOCKET:   incoming connect from 10.0.2.1"
 ]
 
+FAKE_SHELL_CODE = [
+    "/* Initialize kernel stack override */",
+    "void mainframe_bypass() {",
+    "    int port = 31337;",
+    "    char *buffer = malloc(4096);",
+    "    if (buffer == NULL) return;",
+    "    sys_mprotect(0x7fff000, 4096, PROT_READ|PROT_WRITE|PROT_EXEC);",
+    "    memcpy(buffer, payload_bin, sizeof(payload_bin));",
+    "    asm(\"jmp *%%rax\" : : \"a\"(buffer));",
+    "}",
+    "/* Decrypting satellite payload key */",
+    "int satellite_decrypt(char *cipher, int len) {",
+    "    for (int i = 0; i < len; i++) {",
+    "        cipher[i] ^= 0x4A;",
+    "        cipher[i] = (cipher[i] >> 3) | (cipher[i] << 5);",
+    "    }",
+    "    return 1; // Integrity Check Passed",
+    "}",
+    "/* Establishing socket tunneling bypass */",
+    "int sys_connect(char *ip, int port) {",
+    "    struct sockaddr_in server;",
+    "    int sock = socket(AF_INET, SOCK_STREAM, 0);",
+    "    server.sin_addr.s_addr = inet_addr(ip);",
+    "    server.sin_family = AF_INET;",
+    "    server.sin_port = htons(port);",
+    "    connect(sock, (struct sockaddr *)&server, sizeof(server));",
+    "    write(sock, \"GET BACKDOOR / HTTP/1.1\\r\\n\\r\\n\", 30);",
+    "    return sock;",
+    "}",
+    "/* Injecting CSS-grid layout matrix overflow */",
+    "#define CORE_FLUX_DISSIPATION 1210000000ULL",
+    "void trigger_layout_overflow() {",
+    "    volatile uint64_t *flux_register = (uint64_t *)0xDEADBEEF;",
+    "    *flux_register = CORE_FLUX_DISSIPATION;",
+    "    __asm__ __volatile__(\"cli; hlt\");",
+    "}",
+    "/* Quantum cryptography core stabiliser */",
+    "double quantum_stabilise(double density, double entropy) {",
+    "    double factor = sin(density * M_PI) + cos(entropy * M_PI);",
+    "    return factor * 1.21;",
+    "}"
+]
+
+CUBE_VERTICES = [
+    [-1, -1, -1],
+    [1, -1, -1],
+    [1, 1, -1],
+    [-1, 1, -1],
+    [-1, -1, 1],
+    [1, -1, 1],
+    [1, 1, 1],
+    [-1, 1, 1]
+]
+
+CUBE_EDGES = [
+    (0, 1), (1, 2), (2, 3), (3, 0), # Back face
+    (4, 5), (5, 6), (6, 7), (7, 4), # Front face
+    (0, 4), (1, 5), (2, 6), (3, 7)  # Connecting edges
+]
+
 # Keyboard & Console Setup (Cross-Platform)
 try:
     import msvcrt
@@ -357,6 +417,10 @@ def get_key():
                 ch = msvcrt.getch()
                 if ch in (b'\x03', b'\x1b'): # Ctrl+C or ESC
                     return 'q'
+                if ch == b'\x08':
+                    return 'backspace'
+                if ch in (b'\r', b'\n'):
+                    return 'enter'
                 audio.play_click()
                 return ch.decode('utf-8').lower()
             except Exception:
@@ -368,6 +432,10 @@ def get_key():
                 ch = sys.stdin.read(1)
                 if ch in ('\x03', '\x1b'):
                     return 'q'
+                if ch in ('\x7f', '\x08'):
+                    return 'backspace'
+                if ch in ('\r', '\n'):
+                    return 'enter'
                 return ch.lower()
         except Exception:
             return None
@@ -699,6 +767,27 @@ class ScrollingCrackEngine:
             canvas.write_str(start_x + bar_w + 1, active_y + 1, f"{int(self.active_progress*100):3d}%", self.palette["accent"])
 
 
+def rotate_x(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    return x, y * cos_a - z * sin_a, y * sin_a + z * cos_a
+
+
+def rotate_y(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    return x * cos_a + z * sin_a, y, -x * sin_a + z * cos_a
+
+
+def rotate_z(x, y, z, angle):
+    rad = math.radians(angle)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    return x * cos_a - y * sin_a, x * sin_a + y * cos_a, z
+
+
 class CyberMonitor:
     def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0):
         # Load theme from config file, fallback to Fallout Amber
@@ -753,6 +842,15 @@ class CyberMonitor:
         # Initialize audio engine state based on initial sound argument
         audio.muted = not initial_sound
 
+        # Interactive / Absurdity States
+        self.active_mode = "dashboard"  # "dashboard", "shell", "breach"
+        self.hacker_intensity = 0.0
+        self.shell_input = ""
+        self.shell_history = []
+        self.shell_type_index = 0
+        self.breach_time_left = 10.0
+        self.breach_taps = 0
+
         # Continent focus mode configuration
         self.continent_mode_active = False
         self.continent_mode_duration = 0
@@ -802,7 +900,14 @@ class CyberMonitor:
             ("BUFFER OVERFLOW payload deployed to {shorthand}", "success"),
             ("PING SWEEP scanning gateway subnet", "info"),
             ("EXFIL DATASTREAM initiated to remote {ip}", "info"),
-            ("FIREWALL BYPASS verified: routing through {shorthand}", "success")
+            ("FIREWALL BYPASS verified: routing through {shorthand}", "success"),
+            ("[WARNING] Hacker identified as typing on two keyboards simultaneously!", "warn"),
+            ("[ALERT] Firewall bypassed using HTML parsing via regular expressions!", "warn"),
+            ("[NOTICE] External IP trying to download more physical RAM from secure subnet.", "info"),
+            ("[SYSTEM] Bypassing gateway security using butterflies (xkcd 378)", "success"),
+            ("[DANGER] Flux capacitor core temperature exceeding 1.21 Gigawatts!", "warn"),
+            ("[EXPLOIT] Cyber-nanites detected in the liquid cooling pipeline!", "warn"),
+            ("[OVERRIDE] Proxy tunnel breached via CSS grid layout manipulation.", "success")
         ]
         
         cur_time = time.strftime("%H:%M:%S")
@@ -838,6 +943,16 @@ class CyberMonitor:
     def update(self):
         if self.paused:
             return
+
+        # Decay hacker intensity field
+        self.hacker_intensity = max(0.0, self.hacker_intensity - 0.15)
+
+        # Handle emergency countdown in breach mode
+        if self.active_mode == "breach":
+            self.breach_time_left -= 0.06
+            if self.breach_time_left <= 0:
+                self.breach_time_left = 0
+                trigger_meltdown(self.canvas.width, self.canvas.height)
 
         # Increment helix ticks for 3D rotation
         self.helix_tick += 0.25 * self.speed_multiplier
@@ -1021,7 +1136,8 @@ class CyberMonitor:
 
     def draw_dna_decrypter(self, start_x, start_y, max_w, max_h):
         """Over-the-top Hollywood spinning 3D double-helix biometric override decrypter!"""
-        self.canvas.write_str(start_x + 1, start_y - 1, " BIOMETRIC DNA OVERRIDE ", self.palette["warn"])
+        if max_w >= 24:
+            self.canvas.write_str(start_x + 1, start_y - 1, " BIOMETRIC DNA OVERRIDE ", self.palette["warn"])
         
         inside_w = max_w
         inside_h = max_h
@@ -1070,10 +1186,156 @@ class CyberMonitor:
             self.canvas.write_char(rx, cy, right_char, right_color)
             
         # Hollywood status banners!
-        dec_status = "GENOME CODE DECRYPTION ACTIVE..." if int(self.helix_tick * 2) % 2 == 0 else ">>> BIOMETRIC MATCH IN PROGRESS <<<"
+        if inside_w >= 20:
+            dec_status = "GENOME CODE DECRYPTION ACTIVE..." if int(self.helix_tick * 2) % 2 == 0 else ">>> BIOMETRIC MATCH IN PROGRESS <<<"
+        else:
+            dec_status = "DECRYPTING..." if int(self.helix_tick * 2) % 2 == 0 else "MATCHING..."
         self.canvas.write_str(start_x + 1, start_y + inside_h - 1, dec_status[:inside_w-2], self.palette["warn"])
 
+    def draw_3d_cube(self, start_x, start_y, max_w, max_h):
+        """Draw a live, mathematically projected rotating 3D wireframe cube."""
+        self.canvas.write_str(start_x, start_y, "QUANTUM VECTOR STACK (3D):", self.palette["info"])
+        
+        # Center coordinates
+        cx = start_x + (max_w // 2)
+        cy = start_y + (max_h // 2)
+        
+        # Sizing and scaling calculations
+        scale = min(max_w, max_h * 2) * 0.45
+        angle = self.helix_tick * 7.0
+        
+        projected = []
+        for vx, vy, vz in CUBE_VERTICES:
+            # Multi-axis coordinate rotation
+            rx, ry, rz = rotate_x(vx, vy, vz, angle)
+            rx, ry, rz = rotate_y(rx, ry, rz, angle * 1.3)
+            rx, ry, rz = rotate_z(rx, ry, rz, angle * 0.6)
+            
+            # Perspective projection mathematics
+            d = 3.2
+            factor = scale / (rz + d)
+            px = int(cx + rx * factor)
+            py = int(cy + ry * factor * 0.5)  # Squish vertically to correct console cell aspect ratio
+            projected.append((px, py))
+            
+        # Draw edges using Bresenham lines
+        for e1, e2 in CUBE_EDGES:
+            p1 = projected[e1]
+            p2 = projected[e2]
+            path = get_line_path(p1[0], p1[1], p2[0], p2[1])
+            for lx, ly in path:
+                if start_x < lx < start_x + max_w - 1 and start_y < ly < start_y + max_h:
+                    self.canvas.write_char(lx, ly, "#", self.palette["success"])
+                    
+        # Render vertex nodes in bright accent colors
+        for px, py in projected:
+            if start_x < px < start_x + max_w - 1 and start_y < py < start_y + max_h:
+                self.canvas.write_char(px, py, "●", self.palette["packet"])
+
+    def process_shell_command(self, cmd):
+        """Processes fake shell prompt inputs inside Direct Gibson Override shell."""
+        cmd = cmd.strip().lower()
+        if not cmd:
+            return
+            
+        if cmd == "help":
+            self.shell_history.append("Available Direct Gibson Overrides:")
+            self.shell_history.append("  enhance         - Trigger pixel enhancement matrix")
+            self.shell_history.append("  ddos-localhost  - Initiate loopback stress simulation")
+            self.shell_history.append("  nuke-gibson     - Force critical mainframe breach")
+            self.shell_history.append("  exit            - Return to visual security dashboard")
+        elif cmd == "exit":
+            self.active_mode = "dashboard"
+        elif cmd == "enhance":
+            self.shell_history.append("[SYSTEM] Initiating pixel enhancement matrix...")
+            self.shell_history.append("[DATABASE] Resolving CCTV coordinates 37.7749,-122.4194...")
+            self.shell_history.append("[ENGINE] Enhance. Enhance. Enhance.")
+            self.shell_history.append("Compilation successful. Magnifying target...")
+            self.shell_history.append("      .-.")
+            self.shell_history.append("     (   )")
+            self.shell_history.append("      `-' \\")
+            self.shell_history.append("           \\")
+            self.shell_history.append("            \\")
+            self.shell_history.append("[SUCCESS] 4K IMAGE COMPILATION COMPLETE! TARGET CONFIRMED.")
+        elif cmd == "ddos-localhost":
+            self.shell_history.append("[PING] Flooding 127.0.0.1 with 65535 bytes of raw sarcasm...")
+            self.shell_history.append("[PING] Loopback routing resolved.")
+            self.shell_history.append("[ALERT] Localhost is attacking itself!")
+            self.shell_history.append("[FIREWALL] Mainframe locked itself out in confusion!")
+            self.shell_history.append("[FAIL] System self-mitigated via local firewall panic.")
+        elif cmd == "nuke-gibson":
+            self.active_mode = "breach"
+            self.breach_time_left = 10.0
+            self.breach_taps = 0
+        else:
+            self.shell_history.append(f"Error: Command '{cmd}' unrecognized by root supervisor.")
+            self.shell_history.append("Type 'help' to see list of valid bypasses.")
+
+    def draw_shell_screen(self):
+        """Renders fully interactive, retro Hollywood Hacker shell console."""
+        self.canvas.clear()
+        W = self.canvas.width
+        H = self.canvas.height
+        
+        self.canvas.draw_box(0, 0, W, H, " GIBSON DIRECT BACKDOOR OVERRIDE SHELL ", self.palette["border_bold"])
+        
+        # Display history scrolling lines
+        max_rows = H - 5
+        visible_lines = self.shell_history[-max_rows:]
+        for idx, line in enumerate(visible_lines):
+            self.canvas.write_str(2, 2 + idx, line[:W-4], self.palette["success"])
+            
+        # Draw current input prompt at the bottom
+        prompt = f"root@gibson-mainframe:~# {self.shell_input}█"
+        self.canvas.write_str(2, H - 2, prompt[:W-4], self.palette["accent"])
+
+    def draw_breach_screen(self):
+        """Renders high-intensity emergency Gibson Breach manual stabilization console."""
+        self.canvas.clear()
+        W = self.canvas.width
+        H = self.canvas.height
+        
+        # Rapid flashing border between bright warning red and black
+        blink_color = self.palette["warn"] if int(time.time() * 8) % 2 == 0 else "\033[30m"
+        
+        # Center panel
+        box_w = 66
+        box_h = 13
+        bx = (W - box_w) // 2
+        by = (H - box_h) // 2
+        
+        # Fill whole canvas with low-intensity noise to highlight breach danger
+        for y in range(H):
+            for x in range(W):
+                if random.random() < 0.04:
+                    self.canvas.write_char(x, y, random.choice(["!", "@", "#", "$", "%", "?", "*"]), "\033[31m")
+        
+        self.canvas.draw_box(bx, by, box_w, box_h, " !!! SYSTEM CRITICAL MELTDOWN WARNING !!! ", blink_color)
+        
+        self.canvas.write_str(bx + 4, by + 2, "GIBSON MAINFRAME BREACH IN PROGRESS - SYSTEM INJECT DETECTED", self.palette["warn"])
+        self.canvas.write_str(bx + 4, by + 4, f"CORE FLUX OVERFLOW IN:  [ {self.breach_time_left:5.2f}s ]", self.palette["accent"])
+        self.canvas.write_str(bx + 4, by + 5, "FLUX CORE DISSIPATION:  1.21 GW CRITICAL FLUX LIQUID LEAK", self.palette["warn"])
+        
+        # Taps stabilization bar
+        bar_w = 38
+        filled_taps = int(self.breach_taps * bar_w / 15)
+        bar_str = "█" * filled_taps + "░" * (bar_w - filled_taps)
+        self.canvas.write_str(bx + 4, by + 7, f"OVERRIDE PROGRESS: [ {bar_str} ] {self.breach_taps}/15 TAPS", self.palette["success"])
+        self.canvas.write_str(bx + 4, by + 9, "SLAM KEYBOARD KEYS REPEATEDLY TO DISSIPATE CAPACITOR ENERGY", self.palette["accent"])
+        self.canvas.write_str(bx + 4, by + 10, "[OR PRESS 'ESC' to abort and accept mainframe destruction]", "\033[2m")
+
+        # Flashing red border over the screen
+        self.canvas.draw_box(0, 0, W, H, " MAINFRAME MELTDOWN MODE ", blink_color)
+
     def draw(self):
+        # Delegate rendering if in non-dashboard modes
+        if self.active_mode == "shell":
+            self.draw_shell_screen()
+            return
+        elif self.active_mode == "breach":
+            self.draw_breach_screen()
+            return
+
         self.canvas.clear()
         W = self.canvas.width
         H = self.canvas.height
@@ -1252,20 +1514,17 @@ class CyberMonitor:
             for attack in self.attacks:
                 attack.draw(self.canvas, map_x_offset, map_y_offset, crop_left, crop_top, draw_w, draw_h)
 
-
-        # 3. PANEL 2: Hardware Loads & Thermals (Top Right)
+        # Draw the restored border for Panel 2 System Diagnostics
         self.canvas.draw_box(split_x1, 2, W - split_x1, top_h + 1, "SYSTEM DIAGNOSTICS & THERMALS", self.palette["border"])
-        
+
         diag_inside_w = W - split_x1 - 2
         diag_inside_h = top_h - 1
 
         dy = 4
-        # Draw CPU Cores (8 Cores!)
-        self.canvas.write_str(split_x1 + 2, dy, "CPU CORES:", self.palette["info"])
+        # Draw CPU Cores (8 Cores in 2 rows)
+        self.canvas.write_str(split_x1 + 2, dy, "GIBSON MATRIX CORES:", self.palette["info"])
         dy += 1
         
-        # Decide cores per row based on available width
-        # Each core C0:99% with space takes 7 chars
         cores_per_row = 4 if diag_inside_w >= 28 else 2
         num_rows = (8 + cores_per_row - 1) // cores_per_row
         
@@ -1290,47 +1549,142 @@ class CyberMonitor:
                     val_color = self.palette["info"]
                 
                 self.canvas.write_str(cx, dy, val_str, val_color)
-                cx += len(val_str) + 1  # 1 space between cores
+                cx += len(val_str)
+                
+                # Dynamic Hollywood core status tag injection!
+                if diag_inside_w >= 44:
+                    if self.hacker_intensity > 7.0:
+                        tag = random.choice(["[BRN]", "[FLX]", "[OVR]", "[MLT]", "[TNT]"])
+                        tag_color = self.palette["warn"]
+                    else:
+                        if val < 30.0:
+                            tag = "[IDL]"
+                            tag_color = "\033[2m"
+                        elif val < 60.0:
+                            tag = "[OK ]"
+                            tag_color = self.palette["success"]
+                        elif val < 80.0:
+                            tag = "[CLK]"
+                            tag_color = self.palette["info"]
+                        else:
+                            tag = "[ERR]"
+                            tag_color = self.palette["warn"]
+                    self.canvas.write_str(cx, dy, tag, tag_color)
+                    cx += len(tag) + 1
+                else:
+                    cx += 1
             dy += 1
-        dy += 1 # Spacer line
         
-        # Draw remaining metric bars (RAM, DISK, NET, GPU, BUFF)
-        for metric in ["RAM", "DISK", "NET", "GPU", "BUFF"]:
+        # Draw dynamic metrics HOODIE, COFFEE, and FBI TRK (100% reactive to hacker intensity slam speed!)
+        self.metrics["RAM"] = min(100.0, self.hacker_intensity * 10.0 + 35.0 + random.uniform(-2.0, 2.0))
+        
+        if self.hacker_intensity > 5.0:
+            self.metrics["DISK"] = min(120.0, self.metrics["DISK"] + 8.0)
+        else:
+            self.metrics["DISK"] = max(45.0, self.metrics["DISK"] - 0.4 + random.uniform(-0.2, 0.2))
+            
+        self.metrics["GPU"] = min(99.9, self.hacker_intensity * 11.5 + 4.2 + random.uniform(-1.0, 1.0))
+            
+        for metric, label, warning_lbl in [
+            ("RAM", "HOODIE: ", "COZY "),
+            ("DISK", "COFFEE: ", "ALERT"),
+            ("GPU", "FBI TRK:", "RUN!!")
+        ]:
             if dy >= 2 + top_h:
                 break
             val = self.metrics[metric]
-            label = f"{metric:4s}: "
             self.canvas.write_str(split_x1 + 2, dy, label, self.palette["text"])
             
-            bar_len = max(4, diag_inside_w - 14)
-            filled = int(val * bar_len / 100)
+            bar_len = max(4, diag_inside_w - 17)
+            filled = int(val * bar_len / 100) if val <= 100.0 else bar_len
             bar_str = "█" * filled + "░" * (bar_len - filled)
             
             bar_color = self.palette["success"]
-            if val > 85.0:
+            if val > 90.0:
                 bar_color = self.palette["warn"]
-            elif val > 70.0:
+            elif val > 65.0:
                 bar_color = self.palette["info"]
                 
-            self.canvas.write_str(split_x1 + 8, dy, bar_str, bar_color)
-            val_str = f" {int(val):2d}%" if metric != "BUFF" else f" {int(val):2d}MB"
-            self.canvas.write_str(split_x1 + 8 + bar_len, dy, val_str, self.palette["accent"])
+            self.canvas.write_str(split_x1 + 10, dy, bar_str, bar_color)
+            
+            if val > 99.0:
+                val_str = f" {warning_lbl}"
+            else:
+                val_str = f" {int(val):2d}%"
+            self.canvas.write_str(split_x1 + 10 + bar_len, dy, val_str, self.palette["accent"])
             dy += 1
             
-        # Draw thermals in the same panel!
-        therm_y = dy + 1
-        if therm_y + 3 < 2 + top_h:
+        # Draw dynamic thermal deck (fully interactive temperature scales and coolant states!)
+        therm_y = dy
+        if therm_y + 2 < 2 + top_h:
             t1 = int(self.metrics["TEMP"])
-            t2 = int(self.metrics["TEMP"] + random.choice([-1, 0, 1]))
-            coolant = 24.2 + (t1 * 0.25)
             
-            self.canvas.write_str(split_x1 + 2, therm_y - 1, "THERMALS SENSOR DECK:", self.palette["info"])
-            self.canvas.write_str(split_x1 + 2, therm_y, f"CORE0 TEMP: [ {t1}°C ] | CORE1: [ {t2}°C ]", self.palette["success"])
-            self.canvas.write_str(split_x1 + 2, therm_y + 1, f"LIQUID COOLANT SYSTEM: [ {coolant:.1f}°C ]", self.palette["accent"])
+            # Ridiculous, cycle-based cinematic coolant fluid types
+            coolants = ["MNT. DEW (BAJA BLAST)", "LIQ. N2 DEEP CHILL", "PIZZA GREASE v2.0", "BOBA MILK TEA 25%", "HOT POCKET LIQUID", "BOBA COFFEE INJECT"]
+            coolant_type = coolants[int(time.time() / 3.0) % len(coolants)]
             
-            # Cooling status chimes
-            fan_rpm = 3200 + int(t1 * 10)
-            self.canvas.write_str(split_x1 + 2, therm_y + 2, f"COOLING FAN: [ {fan_rpm} RPM ] | STATE: STABLE", self.palette["text"])
+            # Temperature scale reactively spikes under heavy hacking slam speeds
+            coolant_temp = 24.2 + (t1 * 0.25) + (self.hacker_intensity * 120.0)
+            
+            if coolant_temp > 500.0:
+                temp_status = " [MOLTEN LAVA!]"
+                temp_color = self.palette["warn"]
+            elif coolant_temp > 100.0:
+                temp_status = " [BOILING!]"
+                temp_color = self.palette["warn"]
+            else:
+                temp_status = " [STABLE]"
+                temp_color = self.palette["success"]
+                
+            pressure = 1000 + int(t1 * 50) + int(self.hacker_intensity * 800)
+            
+            # Fan speed reacts dramatically to cooling requirements
+            if self.hacker_intensity > 8.0:
+                fan_speed = "MELTDOWN INBOUND (99999 RPM)"
+                fan_color = self.palette["warn"]
+            elif self.hacker_intensity > 4.0:
+                fan_speed = "HYPERVENTILATE (25000 RPM)"
+                fan_color = self.palette["info"]
+            else:
+                fan_speed = "OVERDRIVE (9999 RPM)"
+                fan_color = self.palette["accent"]
+                
+            self.canvas.write_str(split_x1 + 2, therm_y, f"COOLANT: {coolant_type[:24]}", self.palette["success"])
+            self.canvas.write_str(split_x1 + 2, therm_y + 1, f"TEMP: {coolant_temp:.1f}°C{temp_status}", temp_color)
+            
+            if therm_y + 3 < 2 + top_h:
+                self.canvas.write_str(split_x1 + 2, therm_y + 2, f"PSI: {pressure} kPa | FAN: {fan_speed}", fan_color)
+                dy += 3
+            else:
+                dy += 2
+            
+        # Draw Hacker Force Field intensity bar at the bottom of the panel!
+        intensity_y = dy
+        if intensity_y + 1 < 2 + top_h:
+            val = self.hacker_intensity
+            label = "HACK DECK: "
+            self.canvas.write_str(split_x1 + 2, intensity_y, label, self.palette["accent"])
+            
+            bar_len = max(4, diag_inside_w - 15)
+            filled = int(val * bar_len / 10.0)
+            bar_str = "█" * filled + "░" * (bar_len - filled)
+            
+            if val < 2.0:
+                status = "[STATUS: SLEEPY / COFFEE REQUIRED]"
+                status_color = self.palette["map_land"]
+            elif val < 5.0:
+                status = "[STATUS: HOODIE COZINESS 100%]"
+                status_color = self.palette["info"]
+            elif val < 8.0:
+                status = "[STATUS: SLICING SUBNET VIA DUAL-KEYBOARDS]"
+                status_color = self.palette["warn"]
+            else:
+                status = "[STATUS: MAXIMUM HACKER OVERDRIVE!!!]"
+                status_color = self.palette["warn"]
+                
+            self.canvas.write_str(split_x1 + 13, intensity_y, bar_str, status_color)
+            self.canvas.write_str(split_x1 + 2, intensity_y + 1, status[:diag_inside_w - 2].ljust(diag_inside_w - 2), status_color)
+            dy += 2
 
 
         # 4. PANEL 3: Scrolling Password Cracker Panel (Middle Left)
@@ -1369,7 +1723,25 @@ class CyberMonitor:
 
         # 6. PANEL 5: Hollywood DNA Override Decrypter (Middle Right)
         self.canvas.draw_box(split_x2_2, mid_y1, W - split_x2_2, mid_h + 1, "BIOMETRIC CODES OVERRIDE", self.palette["border"])
-        self.draw_dna_decrypter(split_x2_2 + 1, mid_y1 + 1, W - split_x2_2 - 2, mid_h - 1)
+        
+        # Split the inside space of the panel down the middle
+        inside_w = W - split_x2_2 - 2
+        half_w = inside_w // 2
+        div_x = split_x2_2 + 1 + half_w
+        
+        # Draw vertical separator line
+        for y in range(mid_y1 + 1, mid_y1 + mid_h):
+            self.canvas.write_char(div_x, y, "│", self.palette["border"])
+        self.canvas.write_char(div_x, mid_y1, "╦", self.palette["border"])
+        self.canvas.write_char(div_x, mid_y1 + mid_h, "╩", self.palette["border"])
+        
+        # Draw sub-titles on the top border
+        self.canvas.write_str(split_x2_2 + 2, mid_y1, "[Q-CORE]", self.palette["info"])
+        self.canvas.write_str(div_x + 2, mid_y1, "[DNA]", self.palette["warn"])
+        
+        # Draw 3D cube on the left, and DNA helix on the right
+        self.draw_3d_cube(split_x2_2 + 1, mid_y1 + 1, half_w, mid_h - 1)
+        self.draw_dna_decrypter(div_x + 1, mid_y1 + 1, inside_w - half_w - 1, mid_h - 1)
 
 
         # 7. PANEL 6: Intercept Threat alerts (Bottom Left)
@@ -1397,11 +1769,12 @@ class CyberMonitor:
         self.port_scanner.draw(self.canvas, split_x3_1 + 2, mid_y2 + 1, split_x3_2 - split_x3_1 - 2, bottom_h - 1)
 
 
-        # 9. PANEL 8: Freq Waveform & Payload Injector (Bottom Right)
+        # 9. PANEL 8: Freq & Payload Inject Stack (Bottom Right)
         self.canvas.draw_box(split_x3_2, mid_y2, W - split_x3_2, bottom_h + 1, "FREQ & PAYLOAD INJECT STACK", self.palette["border"])
         
         code_inside_w = W - split_x3_2 - 2
         
+        # Render original spectrum analyzer and code streams natively (always visible, no alternation)
         if bottom_h >= 10:
             self.draw_spectrum_analyzer(split_x3_2 + 2, mid_y2 + 1, code_inside_w)
             code_start_y = mid_y2 + 4
@@ -1412,11 +1785,43 @@ class CyberMonitor:
             
         start_code_idx = max(0, len(self.code_stream) - code_inside_h)
         for idx, i in enumerate(range(start_code_idx, len(self.code_stream))):
+            if code_start_y + idx >= mid_y2 + bottom_h:
+                break
             code_line = self.code_stream[i]
             self.canvas.write_str(split_x3_2 + 2, code_start_y + idx, code_line[:code_inside_w].ljust(code_inside_w), self.palette["text"])
 
         # Blended junction grid lines
         self.draw_junctions(W, split_x1, split_x2_1, split_x2_2, split_x3_1, split_x3_2, top_h, mid_h, H)
+
+
+def trigger_meltdown(canvas_w, term_h):
+    """Executes a glorious TUI self-destruct character drop fall meltdown sequence and exits."""
+    sys.stdout.write("\033[H\033[2J") # Clear TUI
+    sys.stdout.flush()
+    columns = [0] * canvas_w
+    chars = ["@", "#", "$", "%", "&", "?", "!", "*", "+", "x", "1", "0", "A", "F"]
+    
+    try:
+        for _ in range(45):
+            for col in range(canvas_w):
+                if random.random() < 0.15:
+                    columns[col] = min(term_h - 1, columns[col] + random.randint(1, 3))
+                
+                cy = columns[col]
+                char = random.choice(chars)
+                # Print green characters descending
+                sys.stdout.write(f"\033[{cy};{col}H\033[91m{char}\033[0m")
+            sys.stdout.flush()
+            time.sleep(0.04)
+    except Exception:
+        pass
+    
+    # Final clear screen and exit message
+    sys.stdout.write("\033[?1049l\033[?25h\033[0m")
+    sys.stdout.flush()
+    print("\n[CRITICAL FAILURE] Gibson Mainframe has melted down.")
+    print("Core Operations deactivated permanently. Good luck.")
+    sys.exit(1)
 
 
 def clamp_speed(value):
@@ -1439,6 +1844,8 @@ def main():
             "  P         Pause / resume\n"
             "  S         Toggle sound\n"
             "  A         Trigger fake attack\n"
+            "  C         Initiate Direct Backdoor Shell override\n"
+            "  G         Initiate critical mainframe breach event\n"
             "  + / =     Increase speed\n"
             "  -         Decrease speed"
         ),
@@ -1524,7 +1931,7 @@ def main():
                     "",
                     "  Please expand your terminal window coordinates to initialize TUI screen...",
                     "",
-                    "  Controls: Q/ESC quit | T theme | P pause | S sound | A attack | +/- speed",
+                    "  Controls: Q/ESC quit | T theme | P pause | S sound | A attack | C shell | G breach | +/- speed",
                     "",
                     "\033[2m  [Press 'Q' or 'ESC' to deactivate operations]\033[0m"
                 ]
@@ -1545,6 +1952,15 @@ def main():
             if monitor.canvas.width != canvas_w or monitor.canvas.height != term_h:
                 monitor.canvas = Canvas(canvas_w, term_h)
 
+            # Sound sirens beep during critical Gibson breach modes!
+            if monitor.active_mode == "breach" and SOUND_ENABLED and not audio.muted:
+                try:
+                    # Rises in frequency as countdown closes
+                    freq = 1000 + int((10.0 - monitor.breach_time_left) * 150)
+                    winsound.Beep(freq, 40)
+                except Exception:
+                    pass
+
             monitor.update()
             monitor.draw()
 
@@ -1554,31 +1970,85 @@ def main():
             sys.stdout.write(frame_buffer)
             sys.stdout.flush()
 
-            # Handle interactive keys
+            # Handle interactive keys based on the active simulator mode
             key = get_key()
-            if key == 'q':
-                break
-            elif key == 't':
-                monitor.toggle_theme()
-            elif key == 'p':
-                monitor.paused = not monitor.paused
-                cur_time = time.strftime("%H:%M:%S")
-                if monitor.paused:
-                    monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Operations PAUSED", "warn"))
-                else:
-                    monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Operations RESUMED", "success"))
-            elif key == 's':
-                monitor.toggle_sound()
-            elif key == 'a':
-                monitor.trigger_attack()
-            elif key in ('+', '='):
-                monitor.speed_multiplier = clamp_speed(monitor.speed_multiplier + 0.25)
-                cur_time = time.strftime("%H:%M:%S")
-                monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Warp Speed: x{monitor.speed_multiplier:.2f}", "info"))
-            elif key == '-':
-                monitor.speed_multiplier = clamp_speed(monitor.speed_multiplier - 0.25)
-                cur_time = time.strftime("%H:%M:%S")
-                monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Warp Speed: x{monitor.speed_multiplier:.2f}", "info"))
+            
+            # Increase keyboard intensity field on key detection
+            if key:
+                monitor.hacker_intensity = min(10.0, monitor.hacker_intensity + 1.5)
+
+            if monitor.active_mode == "shell":
+                if key:
+                    if key in ('q', 'exit') or key == '\x1b':
+                        monitor.active_mode = "dashboard"
+                        monitor.shell_input = ""
+                    elif key == 'enter':
+                        cmd = monitor.shell_input.strip()
+                        monitor.shell_history.append(f"root@gibson-mainframe:~# {cmd}")
+                        monitor.process_shell_command(cmd)
+                        monitor.shell_input = ""
+                    elif key == 'backspace':
+                        monitor.shell_input = monitor.shell_input[:-1]
+                    else:
+                        if len(key) == 1:
+                            # Auto-type realistic coding elements into the shell log scroll
+                            code_line = FAKE_SHELL_CODE[monitor.shell_type_index % len(FAKE_SHELL_CODE)]
+                            monitor.shell_history.append(code_line)
+                            monitor.shell_type_index += 1
+                            # Add character to command buffer
+                            monitor.shell_input += key
+                            audio.play_click()
+            
+            elif monitor.active_mode == "breach":
+                if key:
+                    if key == '\x1b': # Esc aborts breach
+                        monitor.active_mode = "dashboard"
+                    else:
+                        monitor.breach_taps += 1
+                        audio.play_click()
+                        if monitor.breach_taps >= 15:
+                            monitor.active_mode = "dashboard"
+                            cur_time = time.strftime("%H:%M:%S")
+                            monitor.threat_logs.append((f"[{cur_time}] [SUCCESS] Mainframe stabilized. Firewall breach isolated.", "success"))
+                            audio.play_success()
+            
+            else:
+                # Dashboard standard interactive key binders
+                if key == 'q':
+                    break
+                elif key == 't':
+                    monitor.toggle_theme()
+                elif key == 'p':
+                    monitor.paused = not monitor.paused
+                    cur_time = time.strftime("%H:%M:%S")
+                    if monitor.paused:
+                        monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Operations PAUSED", "warn"))
+                    else:
+                        monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Operations RESUMED", "success"))
+                elif key == 's':
+                    monitor.toggle_sound()
+                elif key == 'a':
+                    monitor.trigger_attack()
+                elif key == 'c':
+                    monitor.active_mode = "shell"
+                    monitor.shell_input = ""
+                    monitor.shell_history = []
+                    monitor.shell_history.append("[SYSTEM] Initiating Gibson core shell bypass...")
+                    monitor.shell_history.append("Type 'help' to see active overrides. Type 'exit' to quit.")
+                elif key == 'g':
+                    monitor.active_mode = "breach"
+                    monitor.breach_time_left = 10.0
+                    monitor.breach_taps = 0
+                    cur_time = time.strftime("%H:%M:%S")
+                    monitor.threat_logs.append((f"[{cur_time}] [ALERT] Mainframe breach override initiated!", "warn"))
+                elif key in ('+', '='):
+                    monitor.speed_multiplier = clamp_speed(monitor.speed_multiplier + 0.25)
+                    cur_time = time.strftime("%H:%M:%S")
+                    monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Warp Speed: x{monitor.speed_multiplier:.2f}", "info"))
+                elif key == '-':
+                    monitor.speed_multiplier = clamp_speed(monitor.speed_multiplier - 0.25)
+                    cur_time = time.strftime("%H:%M:%S")
+                    monitor.threat_logs.append((f"[{cur_time}] [SYSTEM] Warp Speed: x{monitor.speed_multiplier:.2f}", "info"))
 
             time.sleep(0.06)
 
