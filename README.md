@@ -99,7 +99,7 @@ I did not write a single line of code on this. Because burning forests and expen
 
 ## Disclaimer 3
 
-If you can find anything weird in it, Gemini 3.5 flash high injected it. Take it up with Google.
+If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take it up with Google.
 
 ## License
 
