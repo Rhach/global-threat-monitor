@@ -93,6 +93,14 @@ Do not use it to assess security posture, impress auditors, diagnose incidents, 
 
 All displayed activity is randomly generated simulation data.
 
+## Disclaimer 2
+
+I did not write a single line of code on this. Because burning forests and expending energy in 2026 is not about productivity. It is about sending a message. Peak humanity.
+
+## Disclaimer 3
+
+If you can find anything weird in it, Gemini 3.5 flash high injected it. Take it up with Google.
+
 ## License
 
 MIT
