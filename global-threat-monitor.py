@@ -21,6 +21,7 @@ from terminal_map import (
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
 from critical_flow import IncidentSimulation
 from collector_model import CollectorSimulation
+from map_layers import LAYERS, TITLES, LEGENDS, intensity, layer_nodes
 from investigation import Investigation
 from investigation_catalog import EventCatalog, EventRecord, LogPayload
 from simulation_model import Organization, SessionSimulation, valid_advance
@@ -487,6 +488,7 @@ class CyberMonitor:
         self.speed_multiplier = clamp_speed(initial_speed)
         self.active_mode = "dashboard"
         self.investigation = Investigation()
+        self.map_layer = "traffic"
         self.view = "WORLD"
         self.map_views = {name: MapViewport(bounds) for name, bounds in VIEWS.items()}
         self.elapsed = 0.0
@@ -836,22 +838,22 @@ class CyberMonitor:
 
     def draw_map(self, x, y, w, h):
         incident = self.critical_incident
-        title = f"PRIORITY TRACK / {incident.identifier}" if incident else f"GLOBAL TRAFFIC / {self.view}"
+        title = f"{TITLES[self.map_layer]} / {self.view} / W layer"
+        if incident and self.map_layer in ("traffic", "incidents"):
+            title = f"{TITLES[self.map_layer]} / W layer / {incident.assessment}"
+        incident_activity = (self.map_layer in ("traffic", "incidents") and incident is not None
+                             and incident.disposition != "dismissed" and incident.route.session is not None
+                             and incident.route.rate > 0)
         px, py, pw, ph = self.panel(x, y, w, h, title)
         visible_routes = [route for route in self.attacks if not route.complete]
-        flagged = sum(route.flagged for route in visible_routes)
-        if incident:
-            route = incident.route
-            coverage = self.incident_coverage(incident)
-            self.text(px, py, pw, f"COVERAGE GAP {coverage}; modeled activity" if coverage else
-                      f"Assessment: {incident.assessment} / reason: {incident.confidence_reason}",
-                      "success" if incident.contained else "warn")
-        else:
-            unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
-            summary = f"{len(visible_routes):02d} flows / {flagged:02d} review"
-            if unknown:
-                summary += f" / {unknown} geo unknown"
-            self.text(px, py, pw, summary, "muted")
+        nodes_by_code = layer_nodes(self)
+        unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
+        summary = (LEGENDS["health"] if self.map_layer == "health" else
+                   "• normal ◆ suspect ✓ held ! stale x off")
+        self.text(px, py, pw, summary, "muted")
+        if self.map_layer != "traffic":
+            visible_routes = ([r for r in visible_routes if r.session is not None and r.session.incident_id]
+                              if self.map_layer == "incidents" else [])
         mh = ph - 2
         if mh < 2:
             return
@@ -877,7 +879,12 @@ class CyberMonitor:
         # Routes use a shallow Bezier arc in screen coordinates. Land remains
         # dim while active flow heads carry the brightest color on the map.
         for route in visible_routes:
-            if (route.critical and incident and route is incident.route) or route.src_city is None or route.dst_city is None:
+            if (incident_activity and route is incident.route) or route.src_city is None or route.dst_city is None:
+                continue
+            linked_incident = (self.incidents.find_incident(route.session.incident_id)
+                               if route.session is not None and route.session.incident_id else None)
+            route_suspected = route.flagged and (linked_incident is None or linked_incident.disposition != "dismissed")
+            if self.map_layer == "incidents" and not route_suspected:
                 continue
             if route.session is not None and route.session.rate == 0:
                 continue  # Established but idle; endpoints/row remain visible.
@@ -892,16 +899,22 @@ class CyberMonitor:
                 fx = round((1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t * t * dx)
                 fy = round((1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t * t * dy)
                 if 0 <= fx < pw and 0 <= fy < mh:
-                    color = "warn" if route.flagged else "trail"
+                    color = "warn" if route_suspected else "trail"
                     self.canvas.write_char(px + fx, my + fy, "·", self.palette[color])
             t = progress
             fx = round((1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t * t * dx)
             fy = round((1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t * t * dy)
             if 0 <= fx < pw and 0 <= fy < mh:
-                self.canvas.write_char(px + fx, my + fy, "●", self.palette["warn" if route.flagged else "packet"])
+                sample_end = self.simulation.sample_time - 1
+                totals = route.session.totals_at(sample_end) if route.session else (0, 0)
+                previous = route.session.totals_at(sample_end - 1) if route.session else (0, 0)
+                measured_rate = (sum(totals[:2]) - sum(previous[:2])) * 8 / 1000000
+                head = ("◆" if route_suspected else intensity(measured_rate, 1, 10)
+                        if route.session is not None else "●")
+                self.canvas.write_char(px + fx, my + fy, head, self.palette["warn" if route_suspected else "packet"])
         # The incident's aggregate activity trail uses the original geographic
         # arc and remains above ordinary traffic and borders when measured active.
-        if incident and incident.route.session is not None and incident.route.rate > 0:
+        if incident_activity:
             steps = 180
             for step in range(steps + 1):
                 t = step / steps
@@ -911,7 +924,7 @@ class CyberMonitor:
                     char, color = "·", "muted"
                 else:
                     char = "•"
-                    color = "success" if incident.contained else "critical_trail"
+                    color = "accent" if incident.disposition == "dismissed" else "success" if incident.contained else "critical_trail"
                 fx, fy = project(*incident.position(t), pw, mh, bounds)
                 fx, fy = round(fx), round(fy)
                 if 0 <= fx < pw and 0 <= fy < mh:
@@ -925,44 +938,35 @@ class CyberMonitor:
             if 0 <= nx < pw and 0 <= ny < mh:
                 groups.setdefault((nx, ny), []).append(city)
                 occupied.add((nx, ny))
-        flagged_codes = {r.src_city[3] for r in visible_routes if r.flagged and r.src_city is not None}
-        flagged_codes.update(r.dst_city[3] for r in visible_routes
-                             if r.flagged and r.dst_city is not None)
-        active_codes = {c[3] for r in visible_routes for c in (r.src_city, r.dst_city)
-                        if c is not None}
-        degraded_codes = {identifier[4:] for identifier, health in self.collectors.collectors.items()
-                          if health.state != "healthy"}
-        active_codes.update(degraded_codes)
-
         def priority(city):
-            return (incident is not None and city in (incident.route.src_city, incident.route.dst_city),
-                    city[3] in degraded_codes,
-                    city[3] in flagged_codes, city[3] in active_codes)
+            return nodes_by_code[city[3]].priority
 
         # Several cities can share a cell at world scale. Show the busiest node
         # in each cell and place its label before quieter neighbors.
         nodes = [(nx, ny, max(cities, key=priority)) for (nx, ny), cities in groups.items()]
         nodes.sort(key=lambda node: priority(node[2]), reverse=True)
         for nx, ny, city in nodes:
-            flagged = city[3] in flagged_codes
-            health = self.collectors.collectors["COL-" + city[3]]
-            symbol = {"healthy": "◆" if flagged else "•", "delayed": "~", "stale": "!",
-                      "offline": "x", "recovering": "r"}[health.state]
-            self.canvas.write_char(px + nx, my + ny, symbol,
-                                   self.palette["warn" if flagged or health.state != "healthy" else "accent"])
-            if city[3] not in active_codes:
+            node = nodes_by_code[city[3]]
+            self.canvas.write_char(px + nx, my + ny, node.symbol, self.palette[node.color])
+            if not node.active:
                 continue
-            for lx, ly in ((nx + 2, ny), (nx - 4, ny), (nx - 1, ny + 1)):
-                cells = {(lx + i, ly) for i in range(3)}
-                if (0 <= lx and lx + 3 <= pw and 0 <= ly < mh
+            label = city[3]
+            if self.map_layer in ("traffic", "density") and node.value:
+                level = intensity(node.value, 1 if self.map_layer == "traffic" else 1000000,
+                                  10 if self.map_layer == "traffic" else 10000000)
+                label += ":" + level
+            size = len(label)
+            for lx, ly in ((nx + 2, ny), (nx - size - 1, ny), (nx - 1, ny + 1)):
+                cells = {(lx + i, ly) for i in range(size)}
+                if (0 <= lx and lx + size <= pw and 0 <= ly < mh
                         and not occupied.intersection(cells)):
-                    self.text(px + lx, my + ly, 3, city[3], "text")
+                    self.text(px + lx, my + ly, size, label, "text")
                     occupied.update(cells)
                     break
-        if incident and incident.route.session is not None and incident.route.rate > 0:
+        if incident_activity:
             fx, fy = project(*incident.position(), pw, mh, bounds)
             fx, fy = round(fx), round(fy)
-            color = "warn" if self.incident_coverage(incident) else "success" if incident.contained else "critical_head"
+            color = "warn" if self.incident_coverage(incident) else "accent" if incident.disposition == "dismissed" else "success" if incident.contained else "critical_head"
             # Target reticle and packet head are drawn last, above node labels.
             for ox, oy, char in ((-1, 0, "["), (1, 0, "]"), (0, -1, "│"),
                                  (0, 1, "│"), (0, 0, "◉")):
@@ -970,8 +974,15 @@ class CyberMonitor:
                     self.canvas.write_char(px + fx + ox, my + fy + oy, char, self.palette[color])
         latitude = f"{abs(viewport.latitude):.2f}°{'N' if viewport.latitude >= 0 else 'S'}"
         longitude = f"{abs(viewport.longitude):.2f}°{'E' if viewport.longitude >= 0 else 'W'}"
-        self.text(px, py + ph - 1, pw,
-                  f"{latitude}  {longitude}  /  {viewport.zoom:.1f}x", "muted")
+        footer = (LEGENDS[self.map_layer] if self.map_layer in ("traffic", "density") else
+                  "Modeled; received evidence via I" if self.map_layer == "incidents" else
+                  f"{latitude} {longitude} / {viewport.zoom:.1f}x")
+        activity = self.simulation.endpoint_activity
+        unlocated = (activity.recent_unknown_bytes if self.map_layer == "density" else
+                     activity.last_unknown_bytes)
+        if (unknown or unlocated) and self.map_layer in ("traffic", "density"):
+            footer += " ?geo unknown"
+        self.text(px, py + ph - 1, pw, footer, "muted")
 
     def draw_health(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "COLLECTOR HEALTH")
@@ -1114,6 +1125,10 @@ class CyberMonitor:
         self.draw_events(0, lower_y, left_w, lower_h)
         self.draw_flows(right_x, lower_y, right_w, lower_h)
         self.text(1, height - 1, width - 2, "E flows | I incident | V archive | O events | C console | P pause | Q quit", "muted")
+        if not self.investigation.filters.values:
+            legend = (LEGENDS["health"] if self.map_layer == "health" else
+                      "• normal ◆ suspected ✓ contained ! stale x offline")
+            self.text(1, height - 2, width - 2, f"Map {self.map_layer} / W layer | {legend}", "muted")
         if self.investigation.filters.values:
             self.text(1, height - 2, width - 2, "Filters: " + self.investigation.filters.label() + " | O inspect/X clear", "accent")
 
@@ -1139,6 +1154,7 @@ class CyberMonitor:
                 "filter clear    Clear all filters; filter alone shows state and counts",
                 "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
                 "dismiss [reason] Keep evidence; does not stop active traffic",
+                "layer [traffic|incidents|health|density] Show or select map layer",
                 "collectors [ID] Heartbeats, coverage, lag, queue and loss",
                 "outage COL-ID | recover COL-ID | delay COL-ID [seconds]",
                 "incident        Active or most recent incident facts and session IDs",
@@ -1219,6 +1235,14 @@ class CyberMonitor:
                     self.active_mode = "inspection"
         elif command in ("exit", "quit"):
             self.active_mode = "dashboard"
+        elif command == "layer" or command.startswith("layer "):
+            parts = command.split()
+            if len(parts) == 2 and parts[1] in LAYERS:
+                self.map_layer = parts[1]
+            elif len(parts) != 1:
+                self.shell_history.append("Use layer traffic|incidents|health|density")
+                return
+            self.shell_history.append(f"Map layer: {self.map_layer}; {LEGENDS[self.map_layer]}")
         elif command == "status":
             self.shell_history.extend([
                 f"Sensors: {self.sensors_online}/{len(CITIES)} healthy; degraded coverage shown on map",
@@ -1477,6 +1501,8 @@ class CyberMonitor:
             self.touch_map()
         elif self.handle_map_key(key):
             pass
+        elif key == "w":
+            self.map_layer = LAYERS[(LAYERS.index(self.map_layer) + 1) % len(LAYERS)]
         elif key == "s":
             self.toggle_sound()
         elif key == "a":

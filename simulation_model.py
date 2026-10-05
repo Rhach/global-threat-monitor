@@ -161,6 +161,8 @@ class SessionSimulation:
         self.history = deque(maxlen=self.HISTORY_LIMIT)
         self.traffic_history = deque([0.0], maxlen=120)
         self.total_bytes = 0
+        from map_layers import EndpointActivity
+        self.endpoint_activity = EndpointActivity(organization)
         self.collector_bytes = {identifier: 0 for identifier in organization.collectors}
         self.last_sample_bytes = 0
         self.sample_time = 1.0
@@ -225,6 +227,7 @@ class SessionSimulation:
                 session.advance_to(boundary)
                 transferred = session.orig_bytes + session.resp_bytes - before
                 self.total_bytes += transferred
+                self.endpoint_activity.add(session.connection, transferred)
                 self.collector_bytes[session.connection.collector_id] += transferred
                 if session.complete:
                     self.sessions.remove(session)
@@ -234,6 +237,7 @@ class SessionSimulation:
             if on_boundary:
                 on_boundary()
             if boundary + 1e-9 >= self.sample_time:
+                self.endpoint_activity.sample(self.now)
                 self.throughput = (self.total_bytes - self.last_sample_bytes) * 8 / 1000000
                 self.last_sample_bytes = self.total_bytes
                 self.traffic_history.append(self.throughput)

@@ -83,6 +83,7 @@ Q / ESC   Quit
 T         Cycle theme
 R         Cycle world / Europe / Asia / Americas
 B         Toggle country borders
+W         Cycle traffic / incidents / sensor health / recent density map layers
 Wheel up  Zoom map in
 Wheel down Zoom map out
 Arrows    Pan map up / down / left / right
@@ -710,6 +711,10 @@ flow ID with N/M, then Enter; D scrolls to the policy history and received evide
 
 ## Historical investigation and combined filters
 
+Historical flow inspection retains the causal stop action's original time and
+affected links across persistent-policy replacement; the current persistent
+policy is labeled separately, and evicted action details are explicit.
+
 **V** on the dashboard opens the retained incident archive. **V** in a flow or
 incident list toggles active versus retained plus active records; linked incident
 session lists already include completed sessions. **O** on the dashboard opens
@@ -819,3 +824,59 @@ and action evidence, then shows a collector outage and delayed receipt into the
 archived timeline. Regression fixtures also investigate all four historical
 outcomes, combine/clear filters, preserve ID selection across receipts, and cross
 real 64→65 incident and 120→121 session/event retention boundaries.
+
+
+## Map layers and measured intensity
+
+Press `W` on the dashboard to cycle **traffic**, **incidents**, **sensor health**,
+and **recent activity density**. The map title names the layer, and its legend
+uses symbols and numbers that work without color. The console commands
+`layer` and `layer traffic|incidents|health|density` inspect or select it. Layer
+selection preserves every region's exact zoom and pan, works while paused, and
+leaves the simulation clock and existing camera behavior unchanged.
+
+Traffic node digits and `CITY:digit` labels show endpoint payload rates from the
+**previous complete one-second simulation bucket**: `1` is positive but below
+1 Mb/s, `2` is 1 to below 10 Mb/s, and `3` is at least 10 Mb/s. Ordinary moving
+route heads use the same bucket for that session. These are measured modeled
+bytes, including final increments from sessions that complete or are contained;
+route animation represents aggregate activity and does not set throughput.
+Traffic and density remain modeled physical activity during a collector coverage
+gap, rather than inventing received telemetry. `•` is normal/zero, `◆` suspected,
+`✓` contained, `!` stale, and `x` offline; status symbols take precedence over
+volume digits, with volume retained in endpoint labels when space permits.
+`?geo unknown` flags unlocated endpoints in live routes or in the displayed
+traffic/density bucket window, including completed sessions.
+
+The incident layer uses correlated active and retained incident dispositions,
+including contained transfers whose routes have stopped. Dismissed incidents
+return to normal markers. A city shared by several records prioritizes stale
+coverage, then suspicion, then containment. The sensor health layer uses each
+of the 128 collectors' actual heartbeat and ingestion state: `•` healthy,
+`~` delayed, `!` stale, `x` offline, and `r` recovering buffered events. Healthy
+collectors remain visible without filling the map with labels.
+
+Density sums the **last 60 complete one-second simulation buckets**, ending at
+`floor(simulation_time)`; the current partial second enters at the next bucket
+boundary. Before 60 seconds it shows all complete buckets since startup.
+Digits indicate positive payload below 1 MB (`1`), 1 to below 10 MB (`2`), or
+at least 10 MB (`3`), using decimal MB. Each transferred byte contributes once
+at each known endpoint: a located source and destination count twice across
+the map (and twice at a city if both endpoints share it). Unknown endpoint
+geography is excluded from geographic markers, never assigned to the collector
+location. Its endpoint byte totals are retained in a separate bounded 60-bucket
+aggregate, keeping the unknown flag visible until the displayed window expires.
+This endpoint
+volume measures recent activity, not event severity or unique global bytes.
+State is bounded to 60 buckets plus one partial bucket; aggregation happens on
+the simulation clock. Repeated draws neither add history nor advance sessions,
+and layers reuse the cached Braille coastlines and borders and existing clipped,
+collision-aware labels. Sparse terminal maps omit labels that cannot fit.
+
+Run `python3 demo_map_layers.py` for four views of the same paused simulation
+moment: a high-volume Frankfurt backup, the Athens incident, and a stale Perth
+collector. It then contains the incident transfer and compares retained density
+with stopped route activity. `python3 -m unittest test_map_layers -v` verifies
+quantitative volume, final bytes, window expiry, unknown geography, consistent
+clock advances, containment, stale coverage, pause/viewport preservation,
+minimum-size rendering, label collisions, caching, and read-only drawing.
