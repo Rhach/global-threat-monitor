@@ -21,6 +21,7 @@ from terminal_map import (
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
 from critical_flow import IncidentSimulation
 from collector_model import CollectorSimulation
+from investigation import Investigation
 from simulation_model import Organization, SessionSimulation, valid_advance
 
 APP_NAME = "Global Threat Monitor"
@@ -484,6 +485,7 @@ class CyberMonitor:
         self.paused = False
         self.speed_multiplier = clamp_speed(initial_speed)
         self.active_mode = "dashboard"
+        self.investigation = Investigation()
         self.view = "WORLD"
         self.map_views = {name: MapViewport(bounds) for name, bounds in VIEWS.items()}
         self.elapsed = 0.0
@@ -1035,6 +1037,9 @@ class CyberMonitor:
     def draw(self):
         self.canvas.clear()
         width, height = self.canvas.width, self.canvas.height
+        if self.active_mode == "inspection":
+            self.investigation.draw(self)
+            return
         if self.active_mode == "shell":
             self.draw_shell_screen()
             return
@@ -1070,6 +1075,7 @@ class CyberMonitor:
         self.draw_health(right_x, 8, right_w, top_h)
         self.draw_events(0, lower_y, left_w, lower_h)
         self.draw_flows(right_x, lower_y, right_w, lower_h)
+        self.text(1, height - 1, width - 2, "E inspect flows | I inspect incident | C console | P pause | Q quit", "muted")
 
     def draw_shell_screen(self):
         width, height = self.canvas.width, self.canvas.height
@@ -1317,6 +1323,14 @@ class CyberMonitor:
         """Return False to quit. Escape and q stay distinct inside the console."""
         if key == "quit":
             return False
+        if self.active_mode == "inspection":
+            if key == "q":
+                return False
+            if not self.investigation.handle_key(self, key):
+                self.active_mode = "dashboard"
+                # Camera easing resumes from the exact viewport left on entry.
+                self.last_auto_zoom = self.last_map_interaction = time.monotonic()
+            return True
         if key in ("wheel_up", "wheel_down") and self.active_mode != "dashboard":
             return True
         if self.active_mode == "shell":
@@ -1362,6 +1376,9 @@ class CyberMonitor:
             self.trigger_attack()
         elif key == "f":
             self.start_critical_incident()
+        elif key in ("e", "i"):
+            self.investigation.open_list(self, "flows" if key == "e" else "incidents")
+            self.active_mode = "inspection"
         elif key == "c":
             self.active_mode = "shell"
             self.shell_input = ""
@@ -1379,7 +1396,9 @@ def main():
     parser = argparse.ArgumentParser(
         prog="global-threat-monitor", description=f"{APP_NAME} v{APP_VERSION}. {APP_DESCRIPTION}",
         epilog="Keys: Q/Esc quit, P pause, T theme, R region, B borders, wheel/[ ] zoom, arrows/HJKL pan, "
-               "0 reset, A flow, F critical incident, C console, G drill, +/- speed, S audio.")
+               "0 reset, A flow, F critical incident, E inspect flows, I inspect incident, C console, G drill, "
+               "+/- speed, S audio. Inspection: N/M select, Enter details, U/D scroll, Esc back; "
+               "E related flows in incident details, I linked incident in flow details.")
     parser.add_argument("-t", "--theme", choices=list(THEMES), help="Set startup theme.")
     parser.add_argument("-s", "--sound", action="store_true", help="Enable optional Windows chimes.")
     parser.add_argument("-n", "--no-sound", action="store_true", help="Mute chimes.")

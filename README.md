@@ -92,6 +92,8 @@ P         Pause / resume
 S         Toggle sound
 A         Add a simulated traffic flow
 F         Trigger the correlated exfiltration scenario immediately
+E         Open active flow selection (N/M previous/next; Enter inspects)
+I         Open active incident selection (N/M previous/next; Enter inspects)
 C         Open simulation console. Esc returns to the dashboard
 G         Start a containment drill. Press keys to complete; Esc cancels
 + / =     Increase speed
@@ -499,7 +501,9 @@ not claim a packet-loss measurement. Lifetime drop totals remain available when
 the measurement window expires.
 
 Per-collector observed payload uses the previous completed one-second byte bucket;
-it is missing during delivery outage. Recovery does not turn unseen past payload
+any bucket containing an outage interval has missing observed payload, even if
+delivery recovers before its sample time. The next fully covered bucket resumes
+observed payload. Recovery does not turn unseen past payload
 into a current traffic burst. The global throughput card remains actual **modeled**
 session bytes, including activity behind a coverage gap. CPU is an estimate with
 18% idle baseline, plus 0.09 percentage points per observed Mb/s, 0.6 per processed
@@ -635,3 +639,66 @@ The tests replay incremental ANSI output to check for stale characters and exerc
 ## License
 
 MIT
+
+## Keyboard investigation
+
+From the dashboard, **E** opens the active flow list and **I** opens the active
+incident list. **N/M** select the previous/next row, wrapping at the ends;
+**Enter** opens the selected ID. The `>` marker and selected-ID footer show the
+selection. Flow rows prioritize incident sessions, then current throughput; a
+selected ID stays selected as these rows reorder. Lists include sessions even
+when their geography is unknown and there is no map route.
+
+In details, **U/D** scroll a page up/down. **E** in incident details opens its
+related session list, including completed related sessions; **I** in a related
+flow's details opens its incident. These links use the same IDs as observations
+and response actions. **Esc** returns one level, preserving the previous list's
+selection or detail scroll. Reopening an already open linked detail returns to
+that frame and its scroll, keeping navigation bounded to five frames. Esc from
+the outer list returns to the prior regional map and exact viewport. Map arrows,
+H/J/K/L, wheel zoom, brackets and region controls continue to work on the dashboard;
+inspection uses its dedicated controls. Console text entry keeps its existing
+meaning. **Q** or Ctrl+C quits; dashboard Esc continues to quit.
+
+Inspection remains live. **P** pauses/resumes and **+/-** changes simulation speed
+while inspecting. A selected session that completes or is stopped stays selected
+and exposes a final summary: duration, final bytes and packets, zero final rates,
+connection state and policy action. A selected incident remains inspectable after
+completion and while a subsequent incident starts. Completed selections remain
+available while the existing bounded model history retains them (120 ordinary
+sessions, 64 incidents, and each retained incident's related sessions). If a record
+is evicted, its selected ID shows an explicit unavailable message and never
+silently points to a replacement row. Historical browsing and filters are a later
+slice; these entry lists select active records plus the retained selection.
+
+Flow details show assets/sites, example addresses and ports, application service,
+transport, encryption, directional payload totals and trailing-one-second Mb/s,
+baseline context, credentials, matching policy lifecycle and received evidence.
+Incident details show severity, confidence/reason, assessment, disposition, response
+outcome, related session IDs, affected session/action links and a chronological,
+scrollable timeline. All times are elapsed simulation seconds. Each observation
+shows its original occurrence separately from actual receipt and lag. Collector
+gaps and losses stay explicit; session rates and actuator results are labeled
+modeled facts. Buffered evidence appears only after receipt, including late
+receipts for retained completed incidents. Long evidence wraps and scrolls at
+80×24; resize uses the same canvas erasure and full-resize clearing as the dashboard.
+
+Run the deterministic keyboard demonstration:
+
+```sh
+python3 demo_investigation.py
+python3 -m unittest test_investigation -v
+```
+
+The demo selects the transfer at 49 seconds with E/Enter, advances traffic while
+inspecting, applies the existing session response API, verifies the stopped
+transfer and action evidence, follows I into the timeline, scrolls at 80×24, and
+returns to the exact Europe viewport. A second run shows the coverage gap and
+original occurrence versus delayed receipt without real-time sleeps.
+
+For an interactive run, use `--seed 12`, trigger **F**, pause with **P** during the
+outbound transfer, then **E**, **Enter** to inspect. Return with Esc twice, open
+**C**, and use `response` to preview the current target before entering
+`block session FLOW-ID`. Leave the console with Esc and resume with P. To inspect
+the completed transfer afterward, use **I**, **Enter**, **E**, select its stable
+flow ID with N/M, then Enter; D scrolls to the policy history and received evidence.
