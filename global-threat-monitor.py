@@ -1031,14 +1031,13 @@ class CyberMonitor:
                 f"Processed: {self.total_events:,}; contained: {self.blocked:,}",
             ])
         elif command == "flows":
-            self.shell_history.extend(
-                (f"{self.organization.describe(r.connection)} / {r.session.summary()}"
-                 if r.connection is not None else
-                 f"{r.src_city[2]} > {r.dst_city[2]} / {r.kind} / {r.rate:.1f} Mb/s")
-                for r in self.attacks)
+            for route in self.attacks:
+                self.shell_history.append(self.organization.describe(route.connection))
+                self.shell_history.extend(route.session.detail_lines())
         elif command == "flow-history":
-            self.shell_history.extend(self.organization.context(s.connection) + " / " + s.summary()
-                                      for s in self.simulation.history)
+            for session in self.simulation.history:
+                self.shell_history.append(self.organization.context(session.connection))
+                self.shell_history.extend(session.detail_lines())
             if not self.simulation.history:
                 self.shell_history.append("No completed sessions yet")
         elif command == "sessions":
@@ -1050,7 +1049,8 @@ class CyberMonitor:
                     self.shell_history.append("Flow limit reached; wait for activity to finish")
                     break
                 route = self.trigger_attack(self.organization.connect(source, peer, service))
-                self.shell_history.append(self.organization.context(route.connection) + " / " + route.session.summary())
+                self.shell_history.append(self.organization.context(route.connection))
+                self.shell_history.extend(route.session.detail_lines())
         elif command == "org":
             self.shell_history.append(f"Aster: {len(self.organization.collectors)} city collectors; "
                                       "collector location does not locate a remote peer")

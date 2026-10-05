@@ -70,6 +70,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((session.orig_pkts, session.resp_pkts), (50000, 250))
         session.advance_to(300)
         self.assertEqual(session.orig_bytes, 60000000)
+        self.assertTrue(all(len(line) <= 75 for line in session.detail_lines()))
 
     def test_payload_and_packets_are_independent_of_dt_partition(self):
         for service in Session.PROFILES:

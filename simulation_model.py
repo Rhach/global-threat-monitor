@@ -107,6 +107,14 @@ class Session:
                 f"orig/resp_pkts={self.orig_pkts}/{self.resp_pkts} "
                 f"orig/resp_Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)")
 
+    def detail_lines(self):
+        """Console facts stay readable at the minimum terminal width."""
+        return (f"{self.identifier} {self.proto}/{self.service} encryption={self.encryption} "
+                f"ports={self.orig_port}>{self.resp_port} {self.state}/{self.conn_state}",
+                f"  duration={self.duration:.2f}s orig/resp_bytes={self.orig_bytes}/{self.resp_bytes}",
+                f"  orig/resp_pkts={self.orig_pkts}/{self.resp_pkts} "
+                f"Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)")
+
 
 class SessionSimulation:
     """Bounded sessions, seeded scheduling and exact one-second traffic buckets.
