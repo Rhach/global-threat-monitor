@@ -150,7 +150,10 @@ class DashboardMapTests(unittest.TestCase):
         app.handle_key("escape")
         app.handle_key("g")
         app.handle_key("wheel_up")
-        self.assertEqual(app.breach_taps, 0)
+        self.assertIsNone(app.drill.preview)
+        self.assertFalse(app.drill.incident.actions)
+        app.update_map(now=20)
+        self.assertEqual(app.map_views["WORLD"].zoom, zoom)
 
     def test_missing_coastlines_leave_sensors_and_borders_usable(self):
         with patch.object(monitor, "load_coastlines", side_effect=FileNotFoundError("coastlines")):

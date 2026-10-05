@@ -21,7 +21,7 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - Correlated critical incidents, grounded confidence, benign lookalikes, and scoped response
 - Keyboard investigation, retained incident outcomes, and combined structured filters
 - Interactive simulation console with `status`, `flows`, and `help` commands
-- Optional containment drill with `G`
+- Reproducible decision exercises with inspection and real policy/service consequences (`G`)
 - Four color themes with a persisted selection
 - Changed-cell rendering, cached maps, and configurable 10–60 FPS animation
 - Non-blocking, opt-in sound chimes on Windows
@@ -109,12 +109,12 @@ O         Open received-event history with occurrence, receipt and lag
 /         Edit combined key=value filters during inspection (Enter applies)
 X         Clear investigation filters (dashboard or inspection)
 C         Open simulation console. Esc returns to the dashboard
-G         Start a containment drill. Press keys to complete; Esc cancels
+G         Start a decision exercise; inspect, preview a scope, Enter confirms
 + / =     Increase speed
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `drill [exfiltration|benign|partial]`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations; `nuke-gibson` starts the default decision exercise. Ctrl+C quits from any view.
 
 Use `scenario credential-misuse` or `scenario lateral-movement` to select those
 families. `scenario credential-benign` and `scenario lateral-benign` select their
@@ -271,8 +271,9 @@ This supports suspected exfiltration in the sense of data removal described by
 recurrence is an observation; the simulation makes no command-and-control
 technique claim. TLS payload content is unavailable. No signature confirmation,
 automatic blocking or credential revocation is inferred from this evidence.
-The existing keyboard drill is a separate simulation exercise and does not
-resolve this incident. The operator can apply the consequential responses below.
+The `G` decision exercise uses an isolated training world with these same model
+APIs; training policies do not resolve the original dashboard incident. The
+operator can apply the consequential responses below to that dashboard incident.
 
 Every observation has an immutable incident ID, evidence ID, timestamp, asset
 IDs, collector ID and (when applicable) session ID. The same session IDs appear
@@ -454,8 +455,8 @@ modeled credential reuse can originate elsewhere. Revocation matches the actual
 identity on a session, regardless of the source asset. Pause
 freezes variant/response delays, speed scales them, and FPS changes no outcome.
 An active incident makes another scenario trigger idempotent regardless of
-variant. The legacy `G` exercise remains separate until the later drill slice;
-these variant and response APIs are shared for that future exercise.
+variant. The `G` decision exercise uses these same variant and response APIs
+in its isolated training world, with a debrief of actual consequences.
 
 Run a fixed-seed comparison without sleeps, terminal, or network access:
 
@@ -596,8 +597,10 @@ flow row and map share the same incident and session state. Automatic follow is
 on by default and can be disabled with `Y` or `--no-auto-follow`. An unpinned
 following camera tracks the aggregate activity marker on the original geographic arc while traffic is
 active. Pause freezes scenario evidence and session bytes; speed changes both,
-and FPS changes only rendering. Console and drill views continue the simulation
-unless paused; camera motion waits until the dashboard returns. Press `F` or enter
+and FPS changes only rendering. Console and investigation views continue the
+simulation unless paused; camera motion waits until the dashboard returns.
+Decision drills freeze the original world and advance their separate training
+world unless paused. Press `F` or enter
 `scenario` in the console to trigger the same scenario as the scheduler.
 
 Map controls immediately stop the automatic follow and leave the incident
@@ -1052,3 +1055,84 @@ checks disabled following, scheduled arrivals during pinning, manual interruptio
 explicit follow, stored regional views, pause, hidden navigation, stage changes,
 wall-time easing across FPS/speed settings, console controls and minimum-size
 camera state with layers and filters.
+
+## Decision exercises
+
+`G` starts the fixed-seed exfiltration exercise. From the console, use
+`drill exfiltration`, `drill benign`, or `drill partial`. Each exercise creates
+one bounded training world using the same organization, session, incident,
+collector, inspection and response implementations as the dashboard. Seed 13
+and a fixed 2026-01-01 UTC clock reproduce evidence and bytes for the same
+simulation-time advances and actions; the host clock and FPS do not choose an
+outcome. Automatic background/session/incident spawning is disabled in this
+world. The exfiltration and partial cases begin at 49s with an active upload;
+the benign case begins at 2s before its backup authorization arrives at 7s.
+Each case also starts an actual legitimate `ATH-WS1>FRA-APP` HTTPS session.
+
+| Exercise key | Behavior |
+| --- | --- |
+| `I`, `E`, `O`, `V` | Inspect incidents, flows, received events or history using existing investigation views; `N/M`, Enter, `U/D` and Esc navigate |
+| `T` | Select the next related live session as the response target; falls back to retained sessions after completion |
+| `B` | Preview blocking this local source's egress to the selected peer, including future connections |
+| `K` | Preview blocking only the selected incident session; future connections remain allowed |
+| `L` | Preview isolation of the selected **local** source endpoint, including all incoming/outgoing legitimate traffic |
+| `J` | Preview incident dismissal, retaining evidence and applying no network policy |
+| `W` | Preview waiting five simulation seconds for more evidence, with no policy |
+| Enter | Confirm exactly the displayed preview, or close a completed debrief |
+| `P`, `+/-` | Pause/resume or change training speed; available during investigation too |
+| `H` | Freeze the training world and open its debrief, including pending/unverified responses |
+| Esc | Discard a preview, navigate back from investigation, cancel the exercise from its menu, or close a debrief |
+| `Q`, Ctrl+C | Quit with normal terminal restoration (`q` remains text inside the filter editor) |
+
+A preview shows the target, scope, matching live session IDs and affected
+legitimate service before Enter sends a request. Ordinary navigation and typing
+apply no containment. Requested policies apply after one simulation second and
+verify after another second through the normal response API. The training world
+continues advancing while its menu, preview or investigation is open unless
+paused; five-second waiting also respects pause. Waiting while paused advances
+nothing. There is no reward for response speed.
+
+Try `G`, `P`, `I`, Enter to inspect the authentication baseline, recurring peer
+and unusual-volume observations; Esc twice returns to the decision menu. `B`
+previews `ATH-WS1>EXT-DXB`. Enter requests the peer policy. `P` resumes the
+clock; after verification `H` displays the debrief. Repeat with `L` to compare
+endpoint isolation. Both stop the upload at the same action boundary; isolation
+also stops the legitimate HTTPS session. The partial case has a second actual
+`ATH-ADM` upload: blocking `ATH-WS1` leaves that flow active and gives partial
+containment. `T` selects the remaining source for another scoped action.
+
+In `drill benign`, confirm `W` to reach the received `JOB-FRA-SIN-001` approval,
+then inspect and confirm `J`: dismissal leaves the authorized replication
+running. Dismissing the suspicious case leaves its upload running. Waiting
+alone stops no bytes. Natural session completion retains transferred bytes and
+unresolved historical suspicion. The debrief shows the delivered observations,
+policy lifecycle, disposition, residual activity, actual session bytes/states
+and policy IDs for interrupted legitimate service. An approved transfer requires
+no containment; a policy against it is described as service disruption.
+
+The deadline is 35 **simulation** seconds after exercise entry (84s for the
+exfiltration/partial cases, 37s for benign). Timeout freezes a readable debrief
+at that exact boundary and applies no recovery policy. `H` also freezes the
+world immediately, so a response still pending at that instant remains explicitly
+unverified. Enter or Esc closes the debrief. Cancelling from the menu returns
+immediately without applying training decisions to the original world.
+
+The original dashboard's sessions, IDs, collectors, events, history, policies,
+metrics and simulation clock freeze from entry until exit. Completion, timeout
+and cancellation return to the dashboard with its original pause/speed, view,
+all regional viewports, follow/pin/auto preferences and sound preference. All
+training policies are discarded. Camera wall-clock references shift by the time
+spent away, preserving the original idle/follow timing age and avoiding a camera
+jump on return. The live world resumes only through its usual future updates.
+
+Run the deterministic scoped-versus-broad comparison without sleeps or a terminal:
+
+```bash
+python3 demo_decision_drill.py
+python3 -m unittest test_decision_drill -v
+```
+
+The demo stops the same upload at 12,000,000 originator bytes with either action.
+By training time 61s, the scoped block preserves the completed legitimate HTTPS
+session's 723,600 payload bytes; broad isolation stops it at 169,200 bytes and
+records the causal policy. It also demonstrates the authorized backup dismissal.

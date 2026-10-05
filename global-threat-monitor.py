@@ -23,6 +23,7 @@ from critical_flow import IncidentSimulation
 from collector_model import CollectorSimulation
 from map_layers import LAYERS, TITLES, LEGENDS, intensity, layer_nodes
 from investigation import Investigation
+from decision_drill import DecisionDrill
 from investigation_catalog import EventCatalog, EventRecord, LogPayload
 from simulation_model import Organization, SessionSimulation, valid_advance
 
@@ -511,8 +512,7 @@ class CyberMonitor:
         self.event_catalog = EventCatalog()
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
-        self.breach_time_left = 10.0
-        self.breach_taps = 0
+        self.drill = None
         self.metrics = {"CPU": 18.0, "RAM": 62.0, "BUFFER_KIB": 0.0,
                         "NET": 0.0, "LATENCY": 0.0}
         self.traffic_history = self.simulation.traffic_history
@@ -841,14 +841,12 @@ class CyberMonitor:
 
     def update(self, dt=1 / 30):
         dt = valid_advance(dt)
+        if self.drill is not None:
+            self.drill.advance(dt)
+            return
         self.update_map()
         if self.paused:
             return
-        if self.active_mode == "breach":
-            self.breach_time_left = max(0.0, self.breach_time_left - dt)
-            if self.breach_time_left == 0:
-                self.active_mode = "dashboard"
-                self.log("Exercise timed out; recovery policy applied", "warn", "HIGH")
         sim_dt = dt * self.speed_multiplier
         self.simulation.advance(sim_dt, self.add_session_route,
                                 self.complete_session, self.sample_telemetry,
@@ -1143,8 +1141,8 @@ class CyberMonitor:
         if self.active_mode == "shell":
             self.draw_shell_screen()
             return
-        if self.active_mode == "breach":
-            self.draw_breach_screen()
+        if self.active_mode == "drill":
+            self.drill.draw(self)
             return
         self.text(1, 0, width - 2, "GLOBAL THREAT MONITOR", "accent")
         state = "PAUSED" if self.paused else "LIVE"
@@ -1227,7 +1225,8 @@ class CyberMonitor:
                 "clear           Clear console history",
                 "enhance         Focus the regional map",
                 "ddos-localhost  Simulate a blocked loopback burst",
-                "nuke-gibson     Start the containment drill",
+                "drill [exfiltration|benign|partial] Decision exercise",
+                "nuke-gibson     Start the default decision exercise",
                 "exit            Return to dashboard",
             ])
         elif command == "filter" or command.startswith("filter "):
@@ -1513,31 +1512,28 @@ class CyberMonitor:
             self.active_mode = "dashboard"
         elif command == "ddos-localhost":
             self.shell_history.append("Loopback burst simulated. Rate-limit policy applied. No packets sent.")
-        elif command == "nuke-gibson":
-            self.start_drill()
+        elif command == "nuke-gibson" or command == "drill" or command.startswith("drill "):
+            try:
+                self.start_drill(command.split()[1] if command.startswith("drill ") else "exfiltration")
+            except ValueError as error:
+                self.shell_history.append(str(error))
         elif command:
             self.shell_history.append(f"Unknown command: {command}")
 
-    def start_drill(self):
-        self.active_mode = "breach"
-        self.breach_time_left = 10.0
-        self.breach_taps = 0
-
-    def draw_breach_screen(self):
-        width, height = self.canvas.width, self.canvas.height
-        bw, bh = min(66, width - 4), 13
-        x, y = (width - bw) // 2, (height - bh) // 2
-        px, py, pw, _ = self.panel(x, y, bw, bh, "CONTAINMENT DRILL")
-        self.text(px, py + 1, pw, "Unusual egress activity detected", "warn")
-        self.text(px, py + 3, pw, f"Response window  {self.breach_time_left:4.1f} seconds", "accent")
-        self.text(px, py + 5, pw, "CONTAINMENT PIPELINE", "text")
-        filled = round(self.breach_taps / 15 * (pw - 8))
-        self.text(px, py + 7, pw, f"{'━' * filled}{'·' * (pw - 8 - filled)} {self.breach_taps:02d}/15", "success")
+    def start_drill(self, case="exfiltration"):
+        if self.drill is None:
+            self.drill = DecisionDrill(self, case, CyberMonitor, not audio.muted)
+            self.active_mode = "drill"
+        return self.drill
 
     def handle_key(self, key):
         """Return False to quit. Escape and q stay distinct inside the console."""
         if key == "quit":
+            if self.drill is not None:
+                self.drill.close(self)
             return False
+        if self.drill is not None:
+            return self.drill.handle_key(self, key)
         if self.active_mode == "inspection":
             if key == "q" and not self.investigation.editing:
                 return False
@@ -1561,17 +1557,6 @@ class CyberMonitor:
             return True
         if key == "q":
             return False
-        if self.active_mode == "breach":
-            if key == "escape":
-                self.active_mode = "dashboard"
-            else:
-                self.breach_taps += 1
-                audio.play_click()
-                if self.breach_taps >= 15:
-                    self.active_mode = "dashboard"
-                    self.log("Containment drill complete; egress isolated", "success", "LOW")
-                    audio.play_success()
-            return True
         if key == "escape":
             return False
         if key == "t":
