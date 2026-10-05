@@ -477,7 +477,7 @@ def clamp_speed(value):
 
 class CyberMonitor:
     def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0,
-                 seed=None):
+                 seed=None, initial_auto_follow=True, initial_pinned=False):
         theme = initial_theme or load_config().get("theme", "ice")
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
@@ -491,6 +491,9 @@ class CyberMonitor:
         self.map_layer = "traffic"
         self.view = "WORLD"
         self.map_views = {name: MapViewport(bounds) for name, bounds in VIEWS.items()}
+        self.auto_follow = bool(initial_auto_follow)
+        self.camera_pinned = bool(initial_pinned)
+        self.camera_incident_id = None
         self.elapsed = 0.0
         self.boot_time = time.monotonic()
         self.last_map_interaction = self.boot_time
@@ -569,10 +572,52 @@ class CyberMonitor:
         if self.critical_incident is not None:
             self.critical_incident.following = False
 
+    @property
+    def camera_state(self):
+        if self.camera_pinned:
+            return "PINNED"
+        return "FOLLOW" if self.critical_incident is not None and self.critical_incident.following else "MANUAL"
+
+    def sync_incident_camera(self):
+        """Configure only newly arrived incidents; manual interruption persists."""
+        incident = self.critical_incident
+        if incident is not None and incident.identifier != self.camera_incident_id:
+            self.camera_incident_id = incident.identifier
+            incident.following = self.auto_follow and not self.camera_pinned
+            self.last_auto_zoom = time.monotonic()
+
+    def set_camera_pin(self, enabled):
+        self.camera_pinned = bool(enabled)
+        self.touch_map()
+
+    def set_auto_follow(self, enabled):
+        self.auto_follow = bool(enabled)
+        if not self.auto_follow:
+            self.touch_map()
+        # Enabling the preference applies to the next arrival. Explicitly
+        # follow the current incident with Enter or 'camera follow'.
+
+    def follow_incident(self):
+        incident = self.critical_incident
+        if self.camera_pinned:
+            return "Map pinned; Z or camera unpin before following"
+        if incident is None:
+            return "No active incident to follow"
+        if incident.route.src_city is None and incident.route.dst_city is None:
+            return "Incident geography unknown; no camera target"
+        incident.following = True
+        self.last_auto_zoom = self.last_map_interaction = time.monotonic()
+        return f"Following {incident.identifier}; aggregate activity, not packet transit"
+
+    def camera_summary(self):
+        viewport = self.map_views[self.view]
+        return (f"Camera {self.camera_state}; auto={'on' if self.auto_follow else 'off'}; "
+                f"{self.view} {viewport.zoom:.1f}x; Y auto / Z pin / Enter follow")
+
     def update_map(self, now=None):
         """Map camera uses wall time, independently of pause and simulation speed."""
         now = time.monotonic() if now is None else now
-        if self.active_mode != "dashboard":
+        if self.active_mode != "dashboard" or self.camera_pinned:
             self.last_auto_zoom = now
             return
         if self.critical_incident is not None and self.critical_incident.following:
@@ -679,6 +724,7 @@ class CyberMonitor:
     def process_simulation_boundary(self):
         self.collectors.advance_to(self.simulation.now)
         self.incidents.process_boundary()
+        self.sync_incident_camera()
 
     def incident_coverage(self, incident):
         identifiers = {self.organization.assets[incident.source_id].collector_id}
@@ -784,7 +830,7 @@ class CyberMonitor:
         if incident is None:
             self.log("Scenario deferred / all session slots occupied", "warn", "MED")
         elif existing is None:
-            self.last_auto_zoom = time.monotonic()
+            self.sync_incident_camera()
         return incident
 
     def update_critical_incident(self, dt):
@@ -1099,6 +1145,8 @@ class CyberMonitor:
         state = "PAUSED" if self.paused else "LIVE"
         header = f"{state}  /  {self.timestamp()} UTC"
         self.text(width - len(header) - 1, 0, len(header), header, "muted")
+        self.text(23, 0, max(0, width - len(header) - 25),
+                  f"{self.camera_state} A:{'on' if self.auto_follow else 'off'} Y/Z/Enter", "muted")
         if self.critical_incident is not None:
             incident = self.critical_incident
             coverage = self.incident_coverage(incident)
@@ -1154,6 +1202,7 @@ class CyberMonitor:
                 "filter clear    Clear all filters; filter alone shows state and counts",
                 "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
                 "dismiss [reason] Keep evidence; does not stop active traffic",
+                "camera [auto on|off|pin|unpin|manual|follow] View behavior",
                 "layer [traffic|incidents|health|density] Show or select map layer",
                 "collectors [ID] Heartbeats, coverage, lag, queue and loss",
                 "outage COL-ID | recover COL-ID | delay COL-ID [seconds]",
@@ -1235,6 +1284,24 @@ class CyberMonitor:
                     self.active_mode = "inspection"
         elif command in ("exit", "quit"):
             self.active_mode = "dashboard"
+        elif command == "camera" or command.startswith("camera "):
+            parts = command.split()
+            if parts == ["camera"]:
+                pass
+            elif parts == ["camera", "auto", "on"]:
+                self.set_auto_follow(True)
+            elif parts == ["camera", "auto", "off"]:
+                self.set_auto_follow(False)
+            elif parts in (["camera", "pin"], ["camera", "unpin"]):
+                self.set_camera_pin(parts[1] == "pin")
+            elif parts == ["camera", "manual"]:
+                self.touch_map()
+            elif parts == ["camera", "follow"]:
+                self.shell_history.append(self.follow_incident())
+            else:
+                self.shell_history.append("Use camera [auto on|auto off|pin|unpin|manual|follow]")
+                return
+            self.shell_history.append(self.camera_summary())
         elif command == "layer" or command.startswith("layer "):
             parts = command.split()
             if len(parts) == 2 and parts[1] in LAYERS:
@@ -1421,9 +1488,12 @@ class CyberMonitor:
         elif command == "clear":
             self.shell_history.clear()
         elif command == "enhance":
-            self.view = "EUROPE"
-            self.map_views[self.view].reset()
-            self.touch_map()
+            if self.camera_pinned:
+                self.shell_history.append("Map pinned; unpin before enhance changes region")
+            else:
+                self.view = "EUROPE"
+                self.map_views[self.view].reset()
+                self.touch_map()
             self.active_mode = "dashboard"
         elif command == "ddos-localhost":
             self.shell_history.append("Loopback burst simulated. Rate-limit policy applied. No packets sent.")
@@ -1497,10 +1567,17 @@ class CyberMonitor:
         elif key == "r":
             keys = list(VIEWS)
             self.view = keys[(keys.index(self.view) + 1) % len(keys)]
-            self.map_views[self.view].reset()
+            if not self.camera_pinned:
+                self.map_views[self.view].reset()
             self.touch_map()
         elif self.handle_map_key(key):
             pass
+        elif key == "y":
+            self.set_auto_follow(not self.auto_follow)
+        elif key == "z":
+            self.set_camera_pin(not self.camera_pinned)
+        elif key == "enter":
+            self.follow_incident()
         elif key == "w":
             self.map_layer = LAYERS[(LAYERS.index(self.map_layer) + 1) % len(LAYERS)]
         elif key == "s":
@@ -1530,13 +1607,15 @@ def main():
     parser = argparse.ArgumentParser(
         prog="global-threat-monitor", description=f"{APP_NAME} v{APP_VERSION}. {APP_DESCRIPTION}",
         epilog="Keys: Q/Esc quit, P pause, T theme, R region, B borders, wheel/[ ] zoom, arrows/HJKL pan, "
-               "0 reset, A flow, F critical incident, E inspect flows, I inspect incident, V archive, O events, C console, G drill, "
+               "0 reset, W layer, Y auto follow, Z pin, Enter follow incident, A flow, F critical incident, E inspect flows, I inspect incident, V archive, O events, C console, G drill, "
                "+/- speed, S audio. Inspection: N/M select, Enter details, U/D scroll, Esc back; "
                "E related flows in incident details, I linked incident in flow details, V active/archive, / filters, X clear.")
     parser.add_argument("-t", "--theme", choices=list(THEMES), help="Set startup theme.")
     parser.add_argument("-s", "--sound", action="store_true", help="Enable optional Windows chimes.")
     parser.add_argument("-n", "--no-sound", action="store_true", help="Mute chimes.")
     parser.add_argument("--speed", type=float, default=1.0, help="Simulation speed, clamped to 0.25–4.0.")
+    parser.add_argument("--no-auto-follow", action="store_true", help="Start with automatic incident following disabled.")
+    parser.add_argument("--pin-map", action="store_true", help="Pin the initial map against automatic camera motion.")
     parser.add_argument("--seed", type=int, help="Reproduce organization peer/service selection.")
     parser.add_argument("--fps", type=int, choices=range(10, 61), metavar="10-60", default=30,
                         help="Rendering rate. Default: 30. Independent of simulation speed.")
@@ -1547,7 +1626,8 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed)
+    monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed,
+                           not args.no_auto_follow, args.pin_map)
     enable_windows_ansi()
     interval = 1 / args.fps
     last_size = None

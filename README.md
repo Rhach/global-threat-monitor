@@ -72,6 +72,8 @@ python global-threat-monitor.py --no-sound
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
 --seed <int>     Reproduce session selection, ports and background schedule
+--no-auto-follow Start with automatic incident follow disabled
+--pin-map        Pin the initial map against automatic camera motion
 --version        Show version information
 --help           Show help
 ```
@@ -84,6 +86,9 @@ T         Cycle theme
 R         Cycle world / Europe / Asia / Americas
 B         Toggle country borders
 W         Cycle traffic / incidents / sensor health / recent density map layers
+Y         Toggle automatic follow for future incident arrivals
+Z         Pin / unpin the map against automatic camera motion
+Enter     Explicitly follow the current incident (unpin first)
 Wheel up  Zoom map in
 Wheel down Zoom map out
 Arrows    Pan map up / down / left / right
@@ -555,7 +560,8 @@ The dashboard always uses detailed Braille coastlines inspired by
 [MapSCII](https://github.com/rastapasta/mapscii). The renderer uses the same
 projection as v4's sensors and curved traffic routes, and keeps the changed-cell
 rendering. Zoom and pan work while paused. `R`
-switches regions and resets the selected region's viewport; `0` resets the current
+switches regions and resets the selected region's viewport when unpinned; pinned
+region switching preserves each stored viewport. `0` resets the current
 view. `+` and `-` still change simulation speed.
 
 Scroll the mouse wheel up to zoom in and down to zoom out anywhere in the
@@ -565,13 +571,14 @@ also work. Mouse scrolling is ignored in the simulation console and drill.
 After 10 seconds without a map interaction, the map gradually zooms out and
 recenters toward the current region's overview. Zooming, panning, changing
 regions, resetting the map or toggling borders restarts the timer. This camera
-behavior uses real time and continues while the simulation is paused; it stops
-while the console or drill is open. Scroll or pan to stop the automatic zoom-out.
+behavior uses real time and continues while the simulation is paused; pinning
+stops it. It also stops while the console, investigation or drill is open. Scroll or pan to stop the automatic zoom-out.
 
 A seeded correlated variant is scheduled after 30–90 simulation seconds, and
 again 30–90 seconds after the preceding scenario finishes. Its P1 banner, priority
-flow row and map share the same incident and session state. The camera follows
-the aggregate activity marker on the original geographic arc while traffic is
+flow row and map share the same incident and session state. Automatic follow is
+on by default and can be disabled with `Y` or `--no-auto-follow`. An unpinned
+following camera tracks the aggregate activity marker on the original geographic arc while traffic is
 active. Pause freezes scenario evidence and session bytes; speed changes both,
 and FPS changes only rendering. Console and drill views continue the simulation
 unless paused; camera motion waits until the dashboard returns. Press `F` or enter
@@ -880,3 +887,52 @@ with stopped route activity. `python3 -m unittest test_map_layers -v` verifies
 quantitative volume, final bytes, window expiry, unknown geography, consistent
 clock advances, containment, stale coverage, pause/viewport preservation,
 minimum-size rendering, label collisions, caching, and read-only drawing.
+
+
+## Manual, following and pinned cameras
+
+The dashboard header shows **MANUAL**, **FOLLOW**, or **PINNED**, followed by
+`A:on`/`A:off` for the automatic-follow preference and `Y/Z/Enter` controls.
+This remains visible at 80x24 alongside the current map layer and filter state.
+Startup options `--no-auto-follow` and `--pin-map` set those preferences without
+changing scenario scheduling or session activity. Preferences are for this run.
+
+`Y` toggles whether the next incident arrival starts camera following. Turning
+it off stops current following; turning it on preserves a current manual view.
+`Enter` explicitly follows the current incident even with automatic following
+disabled. It leaves the incident's age, evidence, actions and sessions intact.
+Follow eases toward the current route's aggregate activity marker, and follows
+new linked session routes as the incident changes stage. A marker's motion is
+aggregate activity; it represents neither physical packet travel time nor
+progress toward incident resolution. Unknown camera targets are never invented.
+
+`Z` pins the map. A pinned camera resists new incidents and idle zoom-out until
+unpinned. Explicit zoom, pan, reset, border and region controls still work while
+pinning remains enabled. Switching regions while pinned preserves each region's
+stored zoom and center, including when returning to the region you first pinned.
+Unpinning leaves a manual view and restarts the ten-second idle delay; `Enter`
+then follows the active incident. Explicit follow does not override a pin.
+`enhance` respects a pin, so its legacy regional reset cannot discard your view.
+
+Manual map interaction stops following and restarts the idle delay, without
+stopping or advancing any incident. Pinning keeps manual adjustments fixed.
+Camera easing uses elapsed wall time independently of simulation speed and FPS;
+updates are capped after long stalls. Pause freezes incident-follow camera motion
+as well as simulation activity. An unpinned manual camera can still ease toward
+its overview after ten wall-clock seconds while paused. Pinning freezes both
+kinds of automatic motion. Console, investigation and drill screens freeze camera
+motion while simulation continues unless paused. Returning resumes from the exact
+stored viewport; hidden screen time is not replayed as a large camera jump.
+
+Console controls are `camera`, `camera auto on`, `camera auto off`, `camera pin`,
+`camera unpin`, `camera manual`, and `camera follow`. `camera` reports the active
+mode, automatic preference, region and zoom. Console typing and investigation
+Enter retain their usual meaning; dashboard camera keys apply only there.
+
+Run `python3 demo_map_camera.py` to pin Athens while a Frankfurt-to-Singapore
+incident begins, then unpin and explicitly follow it with identical incident
+facts before and after camera movement. `python3 -m unittest test_map_camera -v`
+checks disabled following, scheduled arrivals during pinning, manual interruption,
+explicit follow, stored regional views, pause, hidden navigation, stage changes,
+wall-time easing across FPS/speed settings, console controls and minimum-size
+camera state with layers and filters.

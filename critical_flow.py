@@ -178,9 +178,15 @@ class CriticalIncident:
     def follow(self, viewport, dt):
         if not self.following or dt <= 0:
             return
-        lon, lat = self.position()
-        if 0 < self.route.progress < 1:
-            lon, lat = self.position(min(1.0, self.route.progress + 0.025))
+        if self.route.src_city is None or self.route.dst_city is None:
+            target = self.route.src_city or self.route.dst_city
+            if target is None:
+                return
+            lon, lat = target[:2]
+        else:
+            lon, lat = self.position()
+            if 0 < self.route.progress < 1:
+                lon, lat = self.position(min(1.0, self.route.progress + 0.025))
         blend = 1 - math.exp(-4 * dt)
         viewport.zoom += (6.0 - viewport.zoom) * blend
         viewport.longitude += (lon - viewport.longitude) * blend
