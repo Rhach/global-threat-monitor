@@ -18,6 +18,7 @@ from terminal_map import (
 )
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
 from critical_flow import CriticalIncident
+from simulation_model import Organization
 
 APP_NAME = "Global Threat Monitor"
 APP_VERSION = "4.0.0"
@@ -413,7 +414,7 @@ def get_key():
 
 
 class AttackVector:
-    def __init__(self, src, dst, theme_palette):
+    def __init__(self, src, dst, theme_palette, connection=None):
         self.src_city, self.dst_city = src, dst
         self.palette = theme_palette
         self.duration = 3.0
@@ -425,6 +426,10 @@ class AttackVector:
         self.flagged = random.random() < 0.23
         self.rate = random.uniform(0.8, 18.0)
         self.critical = False
+        self.connection = connection
+        if connection is not None:
+            self.kind = connection.service
+            self.flagged = not connection.expected
 
     def update(self, dt=1 / 30):
         self.age += dt
@@ -432,17 +437,6 @@ class AttackVector:
         self.complete = self.age >= self.duration + 0.45
 
 
-EVENTS = [
-    ("INFO", "dns", "DNS response cached", "info"),
-    ("INFO", "tls", "TLS 1.3 session negotiated", "info"),
-    ("LOW", "policy", "Egress policy matched", "success"),
-    ("MED", "recon", "Repeated SYN probes; rate limited", "warn"),
-    ("HIGH", "auth", "SSH credential retries; source blocked", "warn"),
-    ("MED", "waf", "SQLi signature matched; request denied", "warn"),
-    ("LOW", "edr", "Endpoint heartbeat received", "success"),
-    ("INFO", "policy", "Sensor policy synchronized", "success"),
-]
-EVENT_WEIGHTS = [12, 16, 12, 4, 2, 3, 18, 8]
 RULES = ["SSH brute force", "SYN scan", "WAF / injection", "DNS anomaly"]
 
 
@@ -465,10 +459,12 @@ def clamp_speed(value):
 
 
 class CyberMonitor:
-    def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0):
+    def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0,
+                 seed=None):
         theme = initial_theme or load_config().get("theme", "ice")
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
+        self.organization = Organization(CITIES, seed=seed)
         self.canvas = Canvas(100, 35)
         self.paused = False
         self.speed_multiplier = clamp_speed(initial_speed)
@@ -502,7 +498,7 @@ class CyberMonitor:
         self.blocked = 284
         self.rule_hits = [97, 84, 62, 41]
         self.last_eps = 246
-        self.sensors_online = len(CITIES)
+        self.sensors_online = len(self.organization.collectors)
         audio.muted = not initial_sound
         # Seed the feed with a chronological window, rather than dozens of
         # identical timestamps. All addresses are documentation-only ranges.
@@ -582,18 +578,20 @@ class CyberMonitor:
         self.threat_logs.append((self.timestamp(), severity, sensor, message, status))
 
     def generate_threat_log(self, init=False, timestamp=None):
-        severity, category, message, status = random.choices(
-            EVENTS, weights=EVENT_WEIGHTS)[0]
-        sensor = random.choice(CITIES)[3]
-        address = f"{random.choice(['192.0.2', '198.51.100', '203.0.113'])}.{random.randint(1, 254)}"
+        routes = [route for route in self.attacks if route.connection is not None]
+        connection = (self.organization.rng.choice(routes).connection if routes else
+                      self.organization.choose_connection())
+        self.log_connection(connection, timestamp)
+
+    def log_connection(self, connection, timestamp=None):
+        """A peer observation shares the same persistent context as its route."""
         stamp = self.timestamp() if timestamp is None else time.strftime(
             "%H:%M:%S", time.gmtime(timestamp))
-        self.threat_logs.append((stamp, severity, sensor,
-                                 f"{message} / {address}", status))
-        if status == "warn" and timestamp is None:
-            self.blocked += 1
-            idx = {"auth": 0, "recon": 1, "waf": 2}.get(category, 3)
-            self.rule_hits[idx] += 1
+        collector = self.organization.collectors[connection.collector_id]
+        self.threat_logs.append((stamp, "INFO" if connection.expected else "MED",
+                                 collector.city[3],
+                                 self.organization.describe(connection),
+                                 "info" if connection.expected else "warn"))
 
     def toggle_theme(self):
         keys = list(THEMES)
@@ -605,30 +603,27 @@ class CyberMonitor:
         audio.muted = not audio.muted
         self.log("Audio muted" if audio.muted else "Audio enabled", "success")
 
-    def trigger_attack(self):
+    def trigger_attack(self, connection=None):
         if len(self.attacks) >= 12:
             return
-        src, dst = random.sample(CITIES, 2)
-        route = AttackVector(src, dst, self.palette)
+        connection = connection or self.organization.choose_connection()
+        route = AttackVector(self.organization.city_for(connection.source_id),
+                             self.organization.city_for(connection.peer_id),
+                             self.palette, connection)
         self.attacks.append(route)
-        if route.flagged:
-            self.log(f"Anomalous {route.kind} flow / {src[3]} > {dst[3]}",
-                     "warn", "MED", dst[3])
+        self.log_connection(connection)
         audio.play_packet()
+        return route
 
     def start_critical_incident(self):
         if self.critical_incident is not None:
             return
-        # Long enough to trace visibly, without a date-line jump or polar path.
-        corridors = [
-            ("New York", "London"), ("San Francisco", "Toronto"),
-            ("Athens", "Dubai"), ("Beijing", "Singapore"),
-            ("Lagos", "Cape Town"), ("Sao Paulo", "Santiago"),
-            ("Sydney", "Jakarta"), ("Moscow", "Delhi"),
-        ]
-        cities = {city[2]: city for city in CITIES}
-        src_name, dst_name = random.choice(corridors)
-        route = AttackVector(cities[src_name], cities[dst_name], self.palette)
+        # Keep the legacy incident lifecycle until the correlated scenario slice;
+        # its endpoints already refer to the same catalog as ordinary traffic.
+        connection = self.organization.connect("ATH-WS1", "EXT-DXB", "HTTPS")
+        route = AttackVector(self.organization.city_for(connection.source_id),
+                             self.organization.city_for(connection.peer_id),
+                             self.palette, connection)
         if len(self.attacks) >= 12:
             self.attacks.pop(0)
         self.attacks.append(route)
@@ -636,7 +631,9 @@ class CyberMonitor:
         self.critical_incident = CriticalIncident(route, self.incident_count)
         self.critical_cooldown = random.uniform(30.0, 90.0)
         self.last_auto_zoom = time.monotonic()
-        self.log(f"{self.critical_incident.identifier} / Data exfiltration detected / "
+        self.log_connection(connection)
+        self.log(f"{self.organization.context(connection)} / "
+                 f"{self.critical_incident.identifier} / Data exfiltration detected / "
                  f"{route.src_city[3]} > {route.dst_city[3]}", "warn", "CRIT", route.dst_city[3])
         audio.play_success()
 
@@ -655,7 +652,8 @@ class CyberMonitor:
                 "QUARANTINING": "Destination isolated; revoking session credentials",
                 "CONTAINED": "Exfiltration contained; egress blocked and session revoked",
             }
-            self.log(f"{incident.identifier} / {messages[stage]}",
+            self.log(f"{self.organization.context(incident.route.connection)} / "
+                     f"{incident.identifier} / {messages[stage]}",
                      "success" if stage == "CONTAINED" else "warn",
                      "LOW" if stage == "CONTAINED" else "CRIT", incident.route.dst_city[3])
             if stage == "CONTAINED":
@@ -683,11 +681,13 @@ class CyberMonitor:
             if attack.critical:
                 continue
             attack.update(sim_dt)
-            if attack.complete and attack.flagged:
-                self.blocked += 1
-                self.rule_hits[3] += 1
-                self.log(f"Anomalous {attack.kind} flow contained / {attack.src_city[3]}",
-                         "success", "LOW", attack.dst_city[3])
+            if attack.complete and attack.flagged and attack.connection is not None:
+                # Being outside a baseline is a review observation, not proof
+                # of malicious activity or a policy action.
+                self.log(f"{self.organization.context(attack.connection)} / "
+                         "Unfamiliar-peer activity ended; assessment pending",
+                         "info", "INFO",
+                         self.organization.collectors[attack.connection.collector_id].city[3])
         self.attacks[:] = [attack for attack in self.attacks if not attack.complete]
         self.attack_cooldown -= sim_dt
         if self.attack_cooldown <= 0:
@@ -753,7 +753,11 @@ class CyberMonitor:
             self.text(px, py, pw, f"{incident.stage} / {route.src_city[3]} > {route.dst_city[3]} / "
                       f"{round(route.progress * 100):02d}%", "success" if incident.contained else "warn")
         else:
-            self.text(px, py, pw, f"{len(visible_routes):02d} active flows   {flagged:02d} under review", "muted")
+            unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
+            summary = f"{len(visible_routes):02d} flows / {flagged:02d} review"
+            if unknown:
+                summary += f" / {unknown} geo unknown"
+            self.text(px, py, pw, summary, "muted")
         mh = ph - 2
         if mh < 2:
             return
@@ -779,7 +783,7 @@ class CyberMonitor:
         # Routes use a shallow Bezier arc in screen coordinates. Land remains
         # dim while active flow heads carry the brightest color on the map.
         for route in visible_routes:
-            if route.critical:
+            if route.critical or route.src_city is None or route.dst_city is None:
                 continue
             sx, sy = project(*route.src_city[:2], pw, mh, bounds)
             dx, dy = project(*route.dst_city[:2], pw, mh, bounds)
@@ -825,8 +829,11 @@ class CyberMonitor:
             if 0 <= nx < pw and 0 <= ny < mh:
                 groups.setdefault((nx, ny), []).append(city)
                 occupied.add((nx, ny))
-        flagged_codes = {r.dst_city[3] for r in visible_routes if r.flagged}
-        active_codes = {c[3] for r in visible_routes for c in (r.src_city, r.dst_city)}
+        flagged_codes = {r.src_city[3] for r in visible_routes if r.flagged and r.src_city is not None}
+        flagged_codes.update(r.dst_city[3] for r in visible_routes
+                             if r.flagged and r.dst_city is not None)
+        active_codes = {c[3] for r in visible_routes for c in (r.src_city, r.dst_city)
+                        if c is not None}
 
         def priority(city):
             return (incident is not None and city in (incident.route.src_city, incident.route.dst_city),
@@ -892,11 +899,16 @@ class CyberMonitor:
 
     def draw_events(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "EVENT STREAM")
-        self.text(px, py, pw, "TIME UTC  LEVEL NODE  OBSERVATION", "muted")
+        compact = pw < 60
+        self.text(px, py, pw, "TIME UTC  SITE:ASSET / PEER" if compact else
+                  "TIME UTC  LEVEL COL   SITE:ASSET / OBSERVATION", "muted")
         visible = list(self.threat_logs)[-max(0, ph - 1):]
         for i, (stamp, severity, sensor, message, status) in enumerate(visible[:ph - 1]):
             ry = py + i + 1
             self.text(px, ry, 8, stamp, "muted")
+            if compact:
+                self.text(px + 10, ry, pw - 10, message, "warn" if status == "warn" else "text")
+                continue
             color = "warn" if severity in ("MED", "HIGH", "CRIT") else "success" if severity == "LOW" else "muted"
             self.text(px + 10, ry, 4, severity, color)
             self.text(px + 15, ry, 3, sensor, "accent")
@@ -904,21 +916,28 @@ class CyberMonitor:
 
     def draw_flows(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "ACTIVE FLOWS")
-        self.text(px, py, pw, "ROUTE      PROTO  Mb/s  POLICY", "muted")
+        self.text(px, py, pw, "SITE:ASSET > PEER / SERVICE", "muted")
         routes = sorted(self.attacks, key=lambda route: route.critical, reverse=True)
         for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
                 break
             policy = ("BLOCKED" if self.critical_incident.contained else "TRACE") if route.critical else (
                 "REVIEW" if route.flagged else "ALLOW")
-            value = f"{route.src_city[3]} > {route.dst_city[3]}  {route.kind:<5} {route.rate:4.1f}  {policy}"
+            if route.connection is None:
+                context = f"{route.src_city[3]}>{route.dst_city[3]}"
+                assessment = policy
+            else:
+                context = self.organization.context(route.connection)
+                assessment = policy if route.critical else ("OK" if route.connection.expected else "NEW")
+            value = (f"{context} {assessment} {route.kind}" if pw < 40 else
+                     f"{context:<22} {route.kind:<6} {route.rate:4.1f} {assessment}")
             color = "critical_ok" if route.critical and self.critical_incident.contained else (
                 "critical" if route.critical else "warn" if route.flagged else "text")
             self.text(px, py + i + 1, pw, value, color)
         if not self.attacks and ph > 2:
             self.text(px, py + 2, pw, "Waiting for next flow...", "muted")
         if ph > 2:
-            self.text(px, py + ph - 1, pw, "TLS 1.3  /  egress policy enforced", "muted")
+            self.text(px, py + ph - 1, pw, "? geo unknown; NEW review", "muted")
 
     def draw(self):
         self.canvas.clear()
@@ -940,7 +959,7 @@ class CyberMonitor:
             self.text(1, 1, width - 2, banner.ljust(width - 2),
                       "critical_ok" if incident.contained else "critical")
         else:
-            self.text(1, 1, width - 2, "SECURITY OPERATIONS  / Distributed sensor telemetry", "muted")
+            self.text(1, 1, width - 2, "ASTER OPERATIONS / ATH office / FRA data center / SIN cloud / REM users", "muted")
         self.draw_kpis(3)
         left_w = int(width * 0.64)
         right_x = left_w + 1
@@ -968,6 +987,9 @@ class CyberMonitor:
             self.shell_history.extend([
                 "status          Sensor health and current telemetry",
                 "flows           List simulated traffic routes",
+                "org             List sites, assets, expected peers and collectors",
+                "baseline        Athens workstation > expected Frankfurt service",
+                "unfamiliar      Athens workstation > peer with unknown geography",
                 "clear           Clear console history",
                 "enhance         Focus the regional map",
                 "ddos-localhost  Simulate a blocked loopback burst",
@@ -984,8 +1006,32 @@ class CyberMonitor:
             ])
         elif command == "flows":
             self.shell_history.extend(
-                f"{r.src_city[2]} > {r.dst_city[2]} / {r.kind} / {r.rate:.1f} Mb/s"
+                (f"{r.connection.identifier} / {self.organization.describe(r.connection)}"
+                 if r.connection is not None else
+                 f"{r.src_city[2]} > {r.dst_city[2]} / {r.kind} / {r.rate:.1f} Mb/s")
                 for r in self.attacks)
+        elif command == "org":
+            self.shell_history.append(f"Aster: {len(self.organization.collectors)} city collectors; "
+                                      "collector location does not locate a remote peer")
+            for site in self.organization.sites.values():
+                self.shell_history.append(f"{site.identifier}: {site.name} / {site.role} / "
+                                          f"owner {site.owner} / criticality {site.criticality}")
+            for asset in self.organization.assets.values():
+                self.shell_history.append(f"{asset.identifier}@{asset.site_id}: {asset.role} / "
+                                          f"owner {asset.owner} / criticality {asset.criticality} / "
+                                          f"{asset.address} / city {asset.city_code or 'unknown'} / "
+                                          f"collector {asset.collector_id or 'none'}")
+            for entry in self.organization.expected_connections:
+                self.shell_history.append(f"Expected {entry.source_id}>{entry.peer_id} "
+                                          f"{entry.service} / {entry.purpose}")
+        elif command in ("baseline", "unfamiliar"):
+            peer = "FRA-APP" if command == "baseline" else "EXT-UNK"
+            if len(self.attacks) >= 12:
+                self.shell_history.append("Flow limit reached; wait for activity to finish")
+            else:
+                connection = self.organization.connect("ATH-WS1", peer, "HTTPS")
+                self.trigger_attack(connection)
+                self.shell_history.append(self.organization.describe(connection))
         elif command == "clear":
             self.shell_history.clear()
         elif command == "enhance":
@@ -1087,6 +1133,7 @@ def main():
     parser.add_argument("-s", "--sound", action="store_true", help="Enable optional Windows chimes.")
     parser.add_argument("-n", "--no-sound", action="store_true", help="Mute chimes.")
     parser.add_argument("--speed", type=float, default=1.0, help="Simulation speed, clamped to 0.25–4.0.")
+    parser.add_argument("--seed", type=int, help="Reproduce organization peer/service selection.")
     parser.add_argument("--fps", type=int, choices=range(10, 61), metavar="10-60", default=30,
                         help="Rendering rate. Default: 30. Independent of simulation speed.")
     parser.add_argument("-v", "--version", action="version", version=f"{APP_NAME} v{APP_VERSION}")
@@ -1096,7 +1143,7 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed)
+    monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed)
     enable_windows_ansi()
     interval = 1 / args.fps
     last_size = None

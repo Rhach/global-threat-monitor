@@ -15,6 +15,7 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - World, Europe, Asia, and Americas views, selected with `R`
 - Plausible simulated CPU, memory, temperature, latency, and ingress telemetry
 - Traffic history, detection counts, and an active-flow table
+- Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - Critical incidents every 30–90 seconds with a camera follow and staged containment
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
@@ -54,6 +55,7 @@ python global-threat-monitor.py --theme ice
 python global-threat-monitor.py --speed 1.5
 python global-threat-monitor.py --theme ice --fps 30
 python global-threat-monitor.py --fps 15
+python global-threat-monitor.py --theme ice --seed 12
 python global-threat-monitor.py --sound
 python global-threat-monitor.py --no-sound
 ```
@@ -66,6 +68,7 @@ python global-threat-monitor.py --no-sound
 --no-sound       Mute sound chimes
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
+--seed <int>     Reproduce organization peer/service selection
 --version        Show version information
 --help           Show help
 ```
@@ -93,9 +96,60 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `org`, `baseline`, `unfamiliar`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
+
+## Organization and expected peers
+
+The fictional Aster organization has an Athens office (`SITE-ATH`), Frankfurt
+data center (`SITE-FRA`), Singapore cloud region (`SITE-SIN`), and remote users
+(`SITE-REMOTE`). Assets have stable IDs, roles, owners, criticality, and addresses
+from documentation ranges. `org` lists these facts and the configured source,
+peer, service, and purpose of each expected relationship. Catalogs persist for
+the running session across redraws and map navigation; they are not saved to disk.
+
+Ordinary background activity and `A` choose from the same catalog, favoring
+expected peer/service relationships 90% of the time. For example, `ATH-WS1`
+normally reaches `FRA-APP` over HTTPS, or `FRA-DNS` for name resolution.
+`NEW` means the peer/service is outside that asset's configured baseline and
+needs review. It does not prove malicious intent or imply an automatic block;
+ordinary unfamiliar activity ends with its assessment still pending.
+
+Flow rows and events use compact `SITE:asset` labels such as `ATH:ws>FRA:app`.
+`OK` identifies an expected relationship. A trailing `?`, as in `EXT:peer?` or
+`REM:roam?`, explicitly marks unknown geography. Such activity remains in the
+flow table and events, while the map omits a route whose coordinates are missing.
+The `flows` console command shows full site/asset IDs, addresses, collector ID,
+connection ID and assessment. Compact rows prioritize these endpoint labels;
+wider panels also show rate and service. Event timestamps remain UTC.
+
+All 128 existing cities remain separate observation collectors (`COL-ATH`,
+`COL-FRA`, etc.), with their original coordinates and city labels. A collector
+is not an organization asset. In particular, a roaming user's activity observed
+by `COL-FRA` does not assign Frankfurt coordinates to that user. The seed applies
+to organization choices for the same sequence of generation/input calls;
+legacy telemetry and incident pacing are not fully seeded yet. Service-specific
+durations, traffic accounting and incident evidence are follow-up slices.
+
+To reproduce the baseline demonstration without an interactive terminal:
+
+```bash
+python3 demo_organization.py
+python3 -m unittest -v test_simulation_model
+```
+
+The demonstration prints `ATH:ws>FRA:app expected`, followed by
+`ATH:ws>EXT:peer? unfamiliar; review baseline / geography unknown`, and an
+expected roaming-user connection with unknown geography. No packets are sent.
+
+For the dashboard demonstration, run with `--seed 12`, press `P`, then `C`.
+Enter `baseline`, `unfamiliar`, and `flows` to compare the same Athens workstation
+and collector across its expected Frankfurt service and an unfamiliar peer.
+Press Esc to inspect both flow rows while paused; `R` changes the map region
+without changing asset identities. Enter `org` in the console for the catalog.
+The existing `F` incident animation now uses `ATH-WS1` and the catalog's known
+Dubai peer; its legacy scripted lifecycle is retained until the incident slice.
 
 ## Braille map
 
@@ -137,7 +191,7 @@ or destination of an active trace and disappears when that trace completes.
 Labels avoid each other and city markers; when multiple cities share a terminal
 cell, active or flagged sensors take priority.
 
-The map runs offline with the Python standard library. Keep `terminal_map.py`, `terminal_input.py`, `critical_flow.py`,
+The map runs offline with the Python standard library. Keep `terminal_map.py`, `terminal_input.py`, `critical_flow.py`, `simulation_model.py`,
 `world_coastlines.json` and `world_borders.json` alongside the main script. Missing
 or invalid coastline data records an event; sensors, routes and available borders
 continue to render.
@@ -185,7 +239,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow
+python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.
