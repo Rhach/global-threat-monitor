@@ -18,7 +18,7 @@ from terminal_map import (
 )
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
 from critical_flow import CriticalIncident
-from simulation_model import Organization
+from simulation_model import Organization, SessionSimulation, valid_advance
 
 APP_NAME = "Global Threat Monitor"
 APP_VERSION = "4.0.0"
@@ -414,27 +414,38 @@ def get_key():
 
 
 class AttackVector:
-    def __init__(self, src, dst, theme_palette, connection=None):
+    MARKER_PERIOD = 3.0
+
+    def __init__(self, src, dst, theme_palette, connection=None, session=None):
         self.src_city, self.dst_city = src, dst
         self.palette = theme_palette
         self.duration = 3.0
         self.progress = 0.0
         self.age = 0.0
         self.complete = False
-        self.kind = random.choices(
-            ["TLS", "DNS", "HTTPS", "SSH"], weights=[4, 2, 5, 1])[0]
-        self.flagged = random.random() < 0.23
-        self.rate = random.uniform(0.8, 18.0)
+        self.kind = "HTTPS"
+        self.flagged = False
+        self.rate = 0.0
         self.critical = False
         self.connection = connection
+        self.session = session
         if connection is not None:
             self.kind = connection.service
             self.flagged = not connection.expected
+        if session is not None:
+            self.duration = session.lifetime
 
     def update(self, dt=1 / 30):
-        self.age += dt
-        self.progress = min(1.0, self.age / self.duration)
-        self.complete = self.age >= self.duration + 0.45
+        self.age += valid_advance(dt)
+        # Repeating aggregate activity marker, never packet transit or bytes.
+        self.progress = (self.age % self.MARKER_PERIOD) / self.MARKER_PERIOD
+        if self.session is not None:
+            self.age = self.session.duration
+            self.progress = (self.age % self.MARKER_PERIOD) / self.MARKER_PERIOD
+            self.rate = self.session.rate
+            self.complete = self.session.complete
+        else:
+            self.complete = self.age >= self.duration
 
 
 RULES = ["SSH brute force", "SYN scan", "WAF / injection", "DNS anomaly"]
@@ -465,6 +476,7 @@ class CyberMonitor:
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
         self.organization = Organization(CITIES, seed=seed)
+        self.simulation = SessionSimulation(self.organization, seed=seed)
         self.canvas = Canvas(100, 35)
         self.paused = False
         self.speed_multiplier = clamp_speed(initial_speed)
@@ -476,9 +488,6 @@ class CyberMonitor:
         self.last_map_interaction = self.boot_time
         self.last_auto_zoom = self.boot_time
         self.clock_base = time.time()
-        self.telemetry_timer = 0.0
-        self.attack_cooldown = 0.0
-        self.event_cooldown = 1.5
         self.attacks = []
         self.critical_incident = None
         self.critical_cooldown = random.uniform(30.0, 90.0)
@@ -488,22 +497,18 @@ class CyberMonitor:
         self.shell_input = ""
         self.breach_time_left = 10.0
         self.breach_taps = 0
-        self.metrics = {"CPU": 34.0, "RAM": 62.0, "DISK": 41.0,
-                        "TEMP": 49.0, "NET": 184.0, "LATENCY": 23.0}
-        self.traffic_history = deque(
-            (184 + 24 * math.sin(i / 8) + random.uniform(-7, 7)
-             for i in range(90)), maxlen=120)
-        self.latency_history = deque([23.0] * 90, maxlen=120)
-        self.total_events = 12842
-        self.blocked = 284
-        self.rule_hits = [97, 84, 62, 41]
-        self.last_eps = 246
+        self.metrics = {"CPU": 18.0, "RAM": 62.0, "DISK": 41.0,
+                        "TEMP": 44.4, "NET": 0.0, "LATENCY": 15.0}
+        self.traffic_history = self.simulation.traffic_history
+        self.latency_history = deque([15.0], maxlen=120)
+        self.total_events = 0
+        self._sample_events = 0
+        self.blocked = 0
+        self.rule_hits = [0, 0, 0, 0]
+        self.last_eps = 0
         self.sensors_online = len(self.organization.collectors)
         audio.muted = not initial_sound
-        # Seed the feed with a chronological window, rather than dozens of
-        # identical timestamps. All addresses are documentation-only ranges.
-        for i in range(18):
-            self.generate_threat_log(timestamp=self.clock_base - (18 - i) * 3)
+        self.log("Offline simulation ready / session payload traffic; no background aggregate")
         self.borders_visible = False
         self.enable_borders()
         self.enable_coastlines()
@@ -572,10 +577,19 @@ class CyberMonitor:
             self.last_auto_zoom = now
 
     def timestamp(self):
-        return time.strftime("%H:%M:%S", time.gmtime(self.clock_base + self.elapsed))
+        return time.strftime("%H:%M:%S", time.gmtime(self.clock_base + self.simulation.now))
+
+    @property
+    def attack_cooldown(self):
+        return self.simulation.next_spawn - self.simulation.now
+
+    @attack_cooldown.setter
+    def attack_cooldown(self, value):
+        self.simulation.next_spawn = self.simulation.now + max(0.0, value)
 
     def log(self, message, status="info", severity="INFO", sensor="SYS"):
         self.threat_logs.append((self.timestamp(), severity, sensor, message, status))
+        self.total_events += 1
 
     def generate_threat_log(self, init=False, timestamp=None):
         routes = [route for route in self.attacks if route.connection is not None]
@@ -592,6 +606,7 @@ class CyberMonitor:
                                  collector.city[3],
                                  self.organization.describe(connection),
                                  "info" if connection.expected else "warn"))
+        self.total_events += 1
 
     def toggle_theme(self):
         keys = list(THEMES)
@@ -604,16 +619,43 @@ class CyberMonitor:
         self.log("Audio muted" if audio.muted else "Audio enabled", "success")
 
     def trigger_attack(self, connection=None):
-        if len(self.attacks) >= 12:
+        if len(self.attacks) >= 11:
             return
-        connection = connection or self.organization.choose_connection()
+        session = self.simulation.create(connection)
+        if session is None:
+            return
+        return self.add_session_route(session)
+
+    def add_session_route(self, session):
+        connection = session.connection
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
-                             self.palette, connection)
+                             self.palette, connection, session)
         self.attacks.append(route)
         self.log_connection(connection)
         audio.play_packet()
         return route
+
+    def complete_session(self, session):
+        route = next((r for r in self.attacks if r.session is session), None)
+        if route is not None and route.critical:
+            return  # Legacy incident marker remains until its scripted cleanup.
+        if route is not None:
+            route.update(0)
+            self.attacks.remove(route)
+        collector = self.organization.collectors[session.connection.collector_id]
+        assessment = " / assessment pending" if not session.connection.expected else ""
+        self.log(f"{self.organization.context(session.connection)} / {session.summary()}{assessment}",
+                 "info", "INFO", collector.city[3])
+
+    def sample_telemetry(self):
+        traffic = self.simulation.throughput
+        self.metrics.update({"NET": traffic, "CPU": 18 + traffic * 0.09,
+                             "RAM": 62, "DISK": 41, "LATENCY": 15 + traffic * 0.04})
+        self.metrics["TEMP"] = 39 + self.metrics["CPU"] * 0.3
+        self.latency_history.append(self.metrics["LATENCY"])
+        self.last_eps = self.total_events - self._sample_events
+        self._sample_events = self.total_events
 
     def start_critical_incident(self):
         if self.critical_incident is not None:
@@ -621,11 +663,12 @@ class CyberMonitor:
         # Keep the legacy incident lifecycle until the correlated scenario slice;
         # its endpoints already refer to the same catalog as ordinary traffic.
         connection = self.organization.connect("ATH-WS1", "EXT-DXB", "HTTPS")
+        session = self.simulation.create(connection)
+        if session is None:
+            return
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
-                             self.palette, connection)
-        if len(self.attacks) >= 12:
-            self.attacks.pop(0)
+                             self.palette, connection, session)
         self.attacks.append(route)
         self.incident_count += 1
         self.critical_incident = CriticalIncident(route, self.incident_count)
@@ -666,6 +709,7 @@ class CyberMonitor:
             self.last_auto_zoom = time.monotonic()
 
     def update(self, dt=1 / 30):
+        dt = valid_advance(dt)
         self.update_critical_incident(dt)
         self.update_map()
         if self.paused:
@@ -675,46 +719,15 @@ class CyberMonitor:
             if self.breach_time_left == 0:
                 self.active_mode = "dashboard"
                 self.log("Exercise timed out; recovery policy applied", "warn", "HIGH")
-        sim_dt = max(0.0, dt) * self.speed_multiplier
-        self.elapsed += sim_dt
+        sim_dt = dt * self.speed_multiplier
+        self.simulation.advance(sim_dt, self.add_session_route,
+                                self.complete_session, self.sample_telemetry)
+        self.elapsed = self.simulation.now
         for attack in self.attacks:
             if attack.critical:
+                attack.rate = attack.session.rate
                 continue
-            attack.update(sim_dt)
-            if attack.complete and attack.flagged and attack.connection is not None:
-                # Being outside a baseline is a review observation, not proof
-                # of malicious activity or a policy action.
-                self.log(f"{self.organization.context(attack.connection)} / "
-                         "Unfamiliar-peer activity ended; assessment pending",
-                         "info", "INFO",
-                         self.organization.collectors[attack.connection.collector_id].city[3])
-        self.attacks[:] = [attack for attack in self.attacks if not attack.complete]
-        self.attack_cooldown -= sim_dt
-        if self.attack_cooldown <= 0:
-            if len(self.attacks) < 5:
-                self.trigger_attack()
-            self.attack_cooldown += random.uniform(0.7, 1.6)
-        self.event_cooldown -= sim_dt
-        if self.event_cooldown <= 0:
-            self.generate_threat_log()
-            self.event_cooldown += random.uniform(1.8, 3.8)
-        self.telemetry_timer += sim_dt
-        while self.telemetry_timer >= 1.0:
-            self.telemetry_timer -= 1.0
-            # Correlated, gently mean-reverting load. Samples change once a second.
-            traffic = self.metrics["NET"]
-            traffic += (184 - traffic) * 0.06 + random.uniform(-12, 12)
-            self.metrics["NET"] = max(70, min(320, traffic))
-            targets = {"CPU": 18 + traffic * 0.09, "RAM": 62,
-                       "DISK": 41, "TEMP": 39 + self.metrics["CPU"] * 0.3,
-                       "LATENCY": 15 + traffic * 0.04}
-            for key, target in targets.items():
-                jitter = 0.3 if key in ("RAM", "DISK", "TEMP") else 1.2
-                self.metrics[key] += (target - self.metrics[key]) * 0.12 + random.uniform(-jitter, jitter)
-            self.traffic_history.append(self.metrics["NET"])
-            self.latency_history.append(self.metrics["LATENCY"])
-            self.last_eps = int(self.metrics["NET"] * 1.35)
-            self.total_events += self.last_eps
+            attack.update(0)
 
     def panel(self, x, y, w, h, title):
         self.canvas.draw_box(x, y, w, h, title, self.palette["border"])
@@ -726,9 +739,9 @@ class CyberMonitor:
     def draw_kpis(self, y):
         width = self.canvas.width
         cards = [
-            ("EVENTS / SEC", f"{self.last_eps:,}", "normalized telemetry", "accent"),
+            ("EVENTS / SEC", f"{self.last_eps:,}", "observations / 1s", "accent"),
             ("CONTAINED", f"{self.blocked:,}", "policy actions", "success"),
-            ("THROUGHPUT", f"{self.metrics['NET']:.1f} Mb/s", "aggregate ingress", "accent"),
+            ("THROUGHPUT", f"{self.metrics['NET']:.1f} Mb/s", "payload / last 1s", "accent"),
             ("SENSORS", f"{self.sensors_online:02d} / {len(CITIES):02d}", "all regions online", "success"),
         ]
         if self.critical_incident is not None:
@@ -785,6 +798,8 @@ class CyberMonitor:
         for route in visible_routes:
             if route.critical or route.src_city is None or route.dst_city is None:
                 continue
+            if route.session is not None and route.session.rate == 0:
+                continue  # Established but idle; endpoints/row remain visible.
             sx, sy = project(*route.src_city[:2], pw, mh, bounds)
             dx, dy = project(*route.dst_city[:2], pw, mh, bounds)
             cx = (sx + dx) / 2
@@ -883,16 +898,16 @@ class CyberMonitor:
             (f"Latency  {self.metrics['LATENCY']:.1f} ms p95", "accent"),
             ("Packet loss  0.02%", "muted"),
             ("", "muted"),
-            ("INGRESS / 120 SAMPLES", "muted"),
+            ("PAYLOAD / 1s BUCKETS", "muted"),
             (sparkline(self.traffic_history, pw), "accent"),
             (f"{self.metrics['NET']:.1f} Mb/s  /  peak {max(self.traffic_history):.1f}", "muted"),
             ("", "muted"),
             ("DETECTION COUNTS", "muted"),
         ])
-        max_hits = max(self.rule_hits)
+        max_hits = max(1, max(self.rule_hits))
         for label, hits in zip(RULES, self.rule_hits):
             bw = max(2, pw - 22)
-            rows.append((f"{label:<16} {'━' * max(1, round(hits / max_hits * bw)):<{bw}} {hits:3d}", "info"))
+            rows.append((f"{label:<16} {'━' * round(hits / max_hits * bw):<{bw}} {hits:3d}", "info"))
         rows.append((f"Processed  {self.total_events:,} events", "muted"))
         for i, (value, color) in enumerate(rows[:ph]):
             self.text(px, py + i, pw, value, color)
@@ -916,7 +931,7 @@ class CyberMonitor:
 
     def draw_flows(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "ACTIVE FLOWS")
-        self.text(px, py, pw, "SITE:ASSET > PEER / SERVICE", "muted")
+        self.text(px, py, pw, "SITE:ASSET > PEER / SERVICE / Mb/s", "muted")
         routes = sorted(self.attacks, key=lambda route: route.critical, reverse=True)
         for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
@@ -931,13 +946,20 @@ class CyberMonitor:
                 assessment = policy if route.critical else ("OK" if route.connection.expected else "NEW")
             value = (f"{context} {assessment} {route.kind}" if pw < 40 else
                      f"{context:<22} {route.kind:<6} {route.rate:4.1f} {assessment}")
+            if pw >= 58 and route.session is not None:
+                session = route.session
+                value = (f"{context:<22} {session.proto}/{session.service}/{session.encryption} "
+                         f"{session.rate:.2f} {session.conn_state} {assessment}")
+                if pw >= 85:
+                    value += f" {session.duration:.1f}s {session.orig_bytes}/{session.resp_bytes}B"
             color = "critical_ok" if route.critical and self.critical_incident.contained else (
                 "critical" if route.critical else "warn" if route.flagged else "text")
             self.text(px, py + i + 1, pw, value, color)
         if not self.attacks and ph > 2:
             self.text(px, py + 2, pw, "Waiting for next flow...", "muted")
         if ph > 2:
-            self.text(px, py + ph - 1, pw, "? geo unknown; NEW review", "muted")
+            self.text(px, py + ph - 1, pw, "? geo unknown; NEW review" if pw < 40 else
+                      "Mb/s: trailing 1s; markers: activity", "muted")
 
     def draw(self):
         self.canvas.clear()
@@ -986,7 +1008,9 @@ class CyberMonitor:
         if command == "help":
             self.shell_history.extend([
                 "status          Sensor health and current telemetry",
-                "flows           List simulated traffic routes",
+                "flows           Session identity, ports, state, bytes, packets and 1s rates",
+                "sessions        Start DNS, HTTPS, SSH and backup demonstration",
+                "flow-history    Completed session summaries (last 120)",
                 "org             List sites, assets, expected peers and collectors",
                 "baseline        Athens workstation > expected Frankfurt service",
                 "unfamiliar      Athens workstation > peer with unknown geography",
@@ -1001,15 +1025,32 @@ class CyberMonitor:
         elif command == "status":
             self.shell_history.extend([
                 f"Sensors: {self.sensors_online}/{len(CITIES)} online",
-                f"Ingress: {self.metrics['NET']:.1f} Mb/s; p95: {self.metrics['LATENCY']:.1f} ms",
+                f"Payload: {self.metrics['NET']:.4f} Mb/s / previous complete 1s bucket; "
+                f"total {self.simulation.total_bytes:,} bytes; no hidden aggregate",
+                f"Latency: {self.metrics['LATENCY']:.1f} ms / modeled load estimate",
                 f"Processed: {self.total_events:,}; contained: {self.blocked:,}",
             ])
         elif command == "flows":
             self.shell_history.extend(
-                (f"{r.connection.identifier} / {self.organization.describe(r.connection)}"
+                (f"{self.organization.describe(r.connection)} / {r.session.summary()}"
                  if r.connection is not None else
                  f"{r.src_city[2]} > {r.dst_city[2]} / {r.kind} / {r.rate:.1f} Mb/s")
                 for r in self.attacks)
+        elif command == "flow-history":
+            self.shell_history.extend(self.organization.context(s.connection) + " / " + s.summary()
+                                      for s in self.simulation.history)
+            if not self.simulation.history:
+                self.shell_history.append("No completed sessions yet")
+        elif command == "sessions":
+            for source, peer, service in (("ATH-WS1", "FRA-DNS", "DNS"),
+                                          ("ATH-WS1", "FRA-APP", "HTTPS"),
+                                          ("ATH-ADM", "FRA-APP", "SSH"),
+                                          ("FRA-BKP", "SIN-STORE", "BACKUP")):
+                if len(self.attacks) >= 11:
+                    self.shell_history.append("Flow limit reached; wait for activity to finish")
+                    break
+                route = self.trigger_attack(self.organization.connect(source, peer, service))
+                self.shell_history.append(self.organization.context(route.connection) + " / " + route.session.summary())
         elif command == "org":
             self.shell_history.append(f"Aster: {len(self.organization.collectors)} city collectors; "
                                       "collector location does not locate a remote peer")
@@ -1026,7 +1067,7 @@ class CyberMonitor:
                                           f"{entry.service} / {entry.purpose}")
         elif command in ("baseline", "unfamiliar"):
             peer = "FRA-APP" if command == "baseline" else "EXT-UNK"
-            if len(self.attacks) >= 12:
+            if len(self.attacks) >= 11:
                 self.shell_history.append("Flow limit reached; wait for activity to finish")
             else:
                 connection = self.organization.connect("ATH-WS1", peer, "HTTPS")

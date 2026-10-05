@@ -122,10 +122,12 @@ class TimingTests(unittest.TestCase):
 
     def test_speed_scales_motion(self):
         app = monitor.CyberMonitor(initial_theme="ice", initial_speed=2.0)
-        app.trigger_attack()
+        app.trigger_attack(app.organization.connect("ATH-WS1", "FRA-APP", "HTTPS"))
         attack = app.attacks[0]
         app.update(0.1)
-        self.assertAlmostEqual(attack.progress, 0.2 / attack.duration)
+        self.assertAlmostEqual(attack.progress, 0.2 / attack.MARKER_PERIOD)
+        self.assertAlmostEqual(attack.session.duration, 0.2)
+        self.assertEqual(attack.session.orig_bytes, 1200)
 
     def test_histories_and_manual_routes_are_bounded(self):
         app = monitor.CyberMonitor(initial_theme="ice")

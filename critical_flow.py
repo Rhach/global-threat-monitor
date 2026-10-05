@@ -16,7 +16,8 @@ class CriticalIncident:
         route.critical = True
         route.flagged = True
         route.kind = "HTTPS"
-        route.rate = 96.0
+        # The incident's legacy marker script never supplies transfer telemetry.
+        # Session payload accounting remains authoritative until the scenario slice.
 
     @property
     def stage_index(self):

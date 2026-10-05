@@ -13,9 +13,10 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - MapSCII-style detailed Braille coastlines, with zoom and pan
 - Country borders and 128 city sensors across the Americas, Europe, Africa, Asia and Oceania
 - World, Europe, Asia, and Americas views, selected with `R`
-- Plausible simulated CPU, memory, temperature, latency, and ingress telemetry
+- Simulated CPU, memory, temperature, and latency estimates tied to modeled payload throughput
 - Traffic history, detection counts, and an active-flow table
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
+- DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
 - Critical incidents every 30–90 seconds with a camera follow and staged containment
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
@@ -68,7 +69,7 @@ python global-threat-monitor.py --no-sound
 --no-sound       Mute sound chimes
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
---seed <int>     Reproduce organization peer/service selection
+--seed <int>     Reproduce session selection, ports and background schedule
 --version        Show version information
 --help           Show help
 ```
@@ -96,7 +97,7 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `org`, `baseline`, `unfamiliar`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -128,9 +129,10 @@ All 128 existing cities remain separate observation collectors (`COL-ATH`,
 `COL-FRA`, etc.), with their original coordinates and city labels. A collector
 is not an organization asset. In particular, a roaming user's activity observed
 by `COL-FRA` does not assign Frankfurt coordinates to that user. The seed applies
-to organization choices for the same sequence of generation/input calls;
-legacy telemetry and incident pacing are not fully seeded yet. Service-specific
-durations, traffic accounting and incident evidence are follow-up slices.
+to session choices, source ports and background scheduling for the same inputs
+and simulation time, independent of rendering FPS. Legacy priority-incident
+pacing and its marker stages still use the earlier script; correlation and
+consequential response are follow-up slices.
 
 To reproduce the baseline demonstration without an interactive terminal:
 
@@ -150,6 +152,78 @@ Press Esc to inspect both flow rows while paused; `R` changes the map region
 without changing asset identities. Enter `org` in the console for the catalog.
 The existing `F` incident animation now uses `ATH-WS1` and the catalog's known
 Dubai peer; its legacy scripted lifecycle is retained until the incident slice.
+
+## Sessions and reconciled traffic
+
+Each connection has a stable flow ID and originator/responder ports. Transport,
+application service and encryption are separate fields. The vocabulary follows
+[Zeek's connection log](https://docs.zeek.org/en/master/reference/logs/conn.html);
+the dashboard does not integrate Zeek or inspect encrypted payloads. `flows`
+prints duration, state, directional payload bytes, payload-bearing packet counts,
+and directional rates. Compact dashboard rows preserve endpoint and service
+labels; wider rows also show transport/encryption, rate and connection state.
+
+| Service | Transport / peer port | Encryption | Activity |
+| --- | --- | --- | --- |
+| DNS | UDP / 53 | none | 0.2s exchange: 72B request, then 220B response |
+| HTTPS | TCP / 443 | TLS | 12s connection: three 1.2KB requests and 240KB responses, separated by idle gaps |
+| SSH | TCP / 22 | SSH | 180s interactive connection with small bidirectional keepalives and command bursts |
+| BACKUP | TCP / 443 | TLS | 30s upload: 2,000,000 originator B/s and 10,000 responder B/s; 60,300,000B total |
+
+Bytes count modeled payload, excluding headers and retransmissions. Packet
+counts are modeled payload-bearing datagrams/segments; they exclude TCP setup,
+ACK-only packets and teardown. DNS has one request and one response packet.
+Live connection state is `S0` before a DNS reply, otherwise `S1`; normal
+completion is `SF`. Completed sessions stop accumulating and have zero live
+rates. The last 120 completed summaries remain available through `flow-history`.
+The model permits 12 live sessions; manual generation reserves one slot for the
+legacy priority incident and background generation targets fewer than five.
+
+Directional session rates measure byte growth over the trailing one simulation
+second, counting time before creation as zero. The throughput card and traffic
+history use the **previous completed one-second simulation bucket**, summing
+both directions across all modeled sessions, including any session that ended
+in that bucket. There is no hidden background aggregate or synthetic traffic.
+Consequently a newly completed DNS exchange appears in that bucket although
+its current live rate is zero; a partial next bucket leaves the card unchanged.
+The last 120 buckets are retained. `status` reports lifetime payload bytes so
+the bucket integral can be reconciled before history eviction. Event totals and
+events/sec count actual emitted observations; CPU, temperature and latency are
+explicit load estimates, with RAM/disk fixed baseline estimates. Detection and
+containment counts begin at zero.
+
+Moving map heads represent aggregate activity on an established session, using
+a repeating three-second marker cycle. Their location and animation speed do
+not represent physical packet transit, delivery progress or transfer throughput.
+An idle session keeps its row and endpoint labels while its activity marker
+disappears when the trailing rate reaches zero. Pause freezes session accounting
+and markers; speed scales their simulation time. FPS changes only rendering.
+The legacy `F` priority marker retains its scripted camera/lifecycle timing,
+while its session uses the same HTTPS accounting; its scripted containment will
+be replaced by correlated incident and response modeling in later slices.
+
+Run the reproducible demonstration without a terminal or real-time waits:
+
+```bash
+python3 demo_sessions.py
+python3 -m unittest -v test_session_simulation
+```
+
+It shows DNS's request before its response, HTTPS's idle gaps, SSH remaining
+active, the backup ending with 60,300,000B, and the 31s bucket integral matching
+all transferred bytes. Fixtures compare one large advance against 15/60 FPS
+partitions, seeded schedules, pause, speed and marker speed independence.
+
+For a dashboard demonstration, start with `--seed 12 --speed 0.25`, press `P`,
+then `C`, and enter `sessions` and `flows`. This creates the four named sessions
+at one simulation instant. Press Esc and `P` to resume. DNS finishes after 0.8
+real seconds at this speed; HTTPS bursts while SSH and backup remain visible.
+Pause after ten simulation seconds and use `flows` and `status` to compare the
+backup's 20,000,000 originator bytes with its 16 Mb/s outgoing rate. Other live
+sessions contribute their displayed directional bytes to the aggregate. Resume
+past 30 simulation seconds, then inspect `flow-history` for the completed backup
+and `flows` for the persistent SSH session. Console time continues ordinary
+session progression unless paused; only the legacy priority script stops there.
 
 ## Braille map
 
@@ -239,7 +313,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model
+python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.
