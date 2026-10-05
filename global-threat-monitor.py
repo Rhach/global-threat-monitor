@@ -3,7 +3,6 @@
 
 import argparse
 from collections import deque
-from functools import lru_cache
 import json
 import math
 import os
@@ -13,6 +12,12 @@ import shutil
 import sys
 import threading
 import time
+
+from terminal_map import (
+    MapViewport, border_texture, coastline_texture, load_borders, load_coastlines, project,
+)
+from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
+from critical_flow import CriticalIncident
 
 APP_NAME = "Global Threat Monitor"
 APP_VERSION = "4.0.0"
@@ -56,6 +61,9 @@ def make_palette(name, accent):
         "text": "\033[37m", "muted": "\033[90m", "accent": accent,
         "warn": "\033[91m", "success": "\033[32m", "info": "\033[33m",
         "map_land": "\033[2m" + accent, "packet": "\033[97m",
+        "map_border": "\033[90m",
+        "critical": "\033[1;97;41m", "critical_ok": "\033[1;97;42m",
+        "critical_trail": "\033[1;91m", "critical_head": "\033[1;97m",
         "trail": accent,
     }
 
@@ -82,82 +90,131 @@ CITIES = [
     (151.21, -33.87, "Sydney", "SYD"),
     (72.88, 19.08, "Mumbai", "BOM"),
     (103.82, 1.35, "Singapore", "SIN"),
+    (-118.24, 34.05, "Los Angeles", "LAX"),
+    (-87.63, 41.88, "Chicago", "CHI"),
+    (-77.04, 38.91, "Washington", "WAS"),
+    (-122.33, 47.61, "Seattle", "SEA"),
+    (-96.80, 32.78, "Dallas", "DAL"),
+    (-79.38, 43.65, "Toronto", "TOR"),
+    (-123.12, 49.28, "Vancouver", "VAN"),
+    (-99.13, 19.43, "Mexico City", "MEX"),
+    (-58.38, -34.60, "Buenos Aires", "BUE"),
+    (-70.67, -33.45, "Santiago", "SCL"),
+    (-77.04, -12.05, "Lima", "LIM"),
+    (-74.07, 4.71, "Bogota", "BOG"),
+    (-78.47, -0.18, "Quito", "UIO"),
+    (-43.17, -22.91, "Rio de Janeiro", "RIO"),
+    (2.35, 48.86, "Paris", "PAR"),
+    (13.41, 52.52, "Berlin", "BER"),
+    (12.50, 41.90, "Rome", "ROM"),
+    (-3.70, 40.42, "Madrid", "MAD"),
+    (-9.14, 38.72, "Lisbon", "LIS"),
+    (4.90, 52.37, "Amsterdam", "AMS"),
+    (8.54, 47.38, "Zurich", "ZRH"),
+    (18.07, 59.33, "Stockholm", "STO"),
+    (10.75, 59.91, "Oslo", "OSL"),
+    (21.01, 52.23, "Warsaw", "WAW"),
+    (16.37, 48.21, "Vienna", "VIE"),
+    (14.44, 50.08, "Prague", "PRG"),
+    (23.73, 37.98, "Athens", "ATH"),
+    (28.98, 41.01, "Istanbul", "IST"),
+    (30.52, 50.45, "Kyiv", "KYI"),
+    (24.94, 60.17, "Helsinki", "HEL"),
+    (3.38, 6.52, "Lagos", "LOS"),
+    (36.82, -1.29, "Nairobi", "NBO"),
+    (28.05, -26.20, "Johannesburg", "JNB"),
+    (-7.59, 33.57, "Casablanca", "CAS"),
+    (38.76, 9.03, "Addis Ababa", "ADD"),
+    (-17.45, 14.69, "Dakar", "DKR"),
+    (55.27, 25.20, "Dubai", "DXB"),
+    (46.68, 24.71, "Riyadh", "RUH"),
+    (51.39, 35.69, "Tehran", "THR"),
+    (77.21, 28.61, "Delhi", "DEL"),
+    (77.59, 12.97, "Bangalore", "BLR"),
+    (100.50, 13.76, "Bangkok", "BKK"),
+    (106.85, -6.21, "Jakarta", "JKT"),
+    (126.98, 37.57, "Seoul", "SEL"),
+    (114.17, 22.32, "Hong Kong", "HKG"),
+    (121.57, 25.03, "Taipei", "TPE"),
+    (121.47, 31.23, "Shanghai", "SHA"),
+    (67.01, 24.86, "Karachi", "KHI"),
+    (144.96, -37.81, "Melbourne", "MEL"),
+    (174.76, -36.85, "Auckland", "AKL"),
+    (174.78, -41.29, "Wellington", "WLG"),
+    (115.86, -31.95, "Perth", "PER"),
+    (-71.06, 42.36, "Boston", "BOS"),
+    (-80.19, 25.76, "Miami", "MIA"),
+    (-84.39, 33.75, "Atlanta", "ATL"),
+    (-104.99, 39.74, "Denver", "DEN"),
+    (-112.07, 33.45, "Phoenix", "PHX"),
+    (-95.37, 29.76, "Houston", "HOU"),
+    (-73.57, 45.50, "Montreal", "YUL"),
+    (-75.70, 45.42, "Ottawa", "OTT"),
+    (-114.07, 51.05, "Calgary", "YYC"),
+    (-97.14, 49.90, "Winnipeg", "WPG"),
+    (-149.90, 61.22, "Anchorage", "ANC"),
+    (-157.86, 21.31, "Honolulu", "HNL"),
+    (-84.09, 9.93, "San Jose", "SJO"),
+    (-79.52, 8.98, "Panama City", "PTY"),
+    (-66.90, 10.48, "Caracas", "CCS"),
+    (-68.15, -16.50, "La Paz", "LPB"),
+    (-56.16, -34.90, "Montevideo", "MVD"),
+    (-47.88, -15.79, "Brasilia", "BSB"),
+    (-6.26, 53.35, "Dublin", "DUB"),
+    (-3.19, 55.95, "Edinburgh", "EDI"),
+    (-21.94, 64.15, "Reykjavik", "REK"),
+    (12.57, 55.68, "Copenhagen", "CPH"),
+    (4.35, 50.85, "Brussels", "BRU"),
+    (8.68, 50.11, "Frankfurt", "FRA"),
+    (11.58, 48.14, "Munich", "MUC"),
+    (19.04, 47.50, "Budapest", "BUD"),
+    (26.10, 44.43, "Bucharest", "BUH"),
+    (23.32, 42.70, "Sofia", "SOF"),
+    (20.46, 44.82, "Belgrade", "BEG"),
+    (15.98, 45.82, "Zagreb", "ZAG"),
+    (-0.19, 5.56, "Accra", "ACC"),
+    (7.49, 9.06, "Abuja", "ABV"),
+    (-4.01, 5.36, "Abidjan", "ABJ"),
+    (10.18, 36.81, "Tunis", "TUN"),
+    (3.06, 36.75, "Algiers", "ALG"),
+    (-6.85, 34.02, "Rabat", "RBA"),
+    (13.23, -8.84, "Luanda", "LAD"),
+    (15.27, -4.44, "Kinshasa", "FIH"),
+    (30.06, -1.94, "Kigali", "KGL"),
+    (32.58, 0.35, "Kampala", "KLA"),
+    (39.21, -6.79, "Dar es Salaam", "DAR"),
+    (32.59, -25.97, "Maputo", "MPM"),
+    (31.05, -17.83, "Harare", "HRE"),
+    (32.56, 15.50, "Khartoum", "KRT"),
+    (120.98, 14.60, "Manila", "MNL"),
+    (105.83, 21.03, "Hanoi", "HAN"),
+    (106.70, 10.78, "Ho Chi Minh City", "SGN"),
+    (101.69, 3.14, "Kuala Lumpur", "KUL"),
+    (90.41, 23.81, "Dhaka", "DAC"),
+    (85.32, 27.72, "Kathmandu", "KTM"),
+    (79.86, 6.93, "Colombo", "CMB"),
+    (73.04, 33.69, "Islamabad", "ISB"),
+    (69.24, 41.30, "Tashkent", "TAS"),
+    (76.89, 43.24, "Almaty", "ALA"),
+    (106.91, 47.92, "Ulaanbaatar", "ULN"),
+    (104.07, 30.57, "Chengdu", "CTU"),
+    (114.06, 22.54, "Shenzhen", "SZX"),
+    (135.50, 34.69, "Osaka", "OSA"),
+    (34.78, 32.09, "Tel Aviv", "TLV"),
+    (58.41, 23.59, "Muscat", "MCT"),
+    (153.03, -27.47, "Brisbane", "BNE"),
+    (138.60, -34.93, "Adelaide", "ADL"),
+    (147.18, -9.44, "Port Moresby", "POM"),
+    (178.45, -18.14, "Suva", "SUV"),
 ]
 
-# Simplified coastlines, rasterized once per viewport into 2x4 braille cells.
 # Equirectangular projection, bounded to 80 N / 60 S in the world view.
-LAND = [
-    [(-168, 71), (-145, 70), (-130, 60), (-125, 50), (-123, 40),
-     (-116, 32), (-109, 24), (-100, 17), (-88, 15), (-83, 9), (-77, 8),
-     (-87, 21), (-81, 25), (-80, 32), (-70, 43), (-60, 47), (-55, 53),
-     (-65, 60), (-80, 63), (-95, 74), (-120, 73), (-150, 72)],
-    [(-73, 60), (-48, 59), (-20, 76), (-42, 83), (-62, 80)],
-    [(-81, 12), (-72, 11), (-61, 8), (-50, 1), (-35, -6), (-40, -20),
-     (-49, -28), (-54, -38), (-68, -55), (-75, -45), (-73, -30),
-     (-80, -10)],
-    [(-17, 35), (-5, 36), (10, 37), (25, 32), (33, 31), (43, 12),
-     (51, 11), (42, -2), (35, -20), (28, -34), (18, -35), (11, -18),
-     (8, 4), (-5, 5), (-16, 15)],
-    [(-10, 36), (-10, 44), (-1, 49), (8, 54), (5, 59), (20, 71),
-     (32, 70), (40, 60), (60, 69), (90, 75), (120, 72), (160, 66),
-     (179, 65), (168, 55), (145, 48), (140, 38), (124, 40), (122, 25),
-     (110, 19), (107, 10), (100, 1), (96, 18), (88, 22), (80, 8),
-     (73, 19), (65, 25), (58, 24), (52, 13), (43, 12), (35, 30),
-     (26, 40), (20, 40), (16, 38), (12, 45), (3, 43)],
-    [(-8, 50), (-6, 58), (-3, 59), (1, 52)],
-    [(130, 31), (136, 35), (142, 41), (145, 44), (141, 45), (137, 38)],
-    [(113, -22), (123, -14), (135, -12), (141, -17), (145, -14),
-     (153, -25), (150, -37), (137, -35), (130, -32), (115, -35)],
-    [(47, -13), (50, -17), (46, -26), (43, -24)],
-    [(95, 5), (105, -5), (114, -8), (106, -8)],
-    [(109, 7), (118, 7), (119, -4), (111, -4)],
-    [(130, -3), (141, -2), (151, -7), (141, -10)],
-    [(166, -34), (179, -40), (173, -47), (166, -46), (174, -40)],
-]
 VIEWS = {
     "WORLD": (-180, 180, -60, 80),
     "EUROPE": (-15, 50, 25, 72),
     "ASIA": (45, 160, -15, 65),
     "AMERICAS": (-170, -30, -60, 75),
 }
-
-
-def project(lon, lat, width, height, bounds):
-    west, east, south, north = bounds
-    return ((lon - west) / (east - west) * (width - 1),
-            (north - lat) / (north - south) * (height - 1))
-
-
-@lru_cache(maxsize=8)
-def map_texture(width, height, view):
-    """Scanline-fill coastlines at braille resolution. No per-frame geography work."""
-    sw, sh = width * 2, height * 4
-    pixels = [bytearray(sw) for _ in range(sh)]
-    for polygon in LAND:
-        points = [project(lon, lat, sw, sh, VIEWS[view]) for lon, lat in polygon]
-        for y in range(sh):
-            scan_y = y + 0.5
-            crossings = []
-            for a, b in zip(points, points[1:] + points[:1]):
-                if (a[1] <= scan_y < b[1]) or (b[1] <= scan_y < a[1]):
-                    crossings.append(a[0] + (scan_y - a[1]) *
-                                     (b[0] - a[0]) / (b[1] - a[1]))
-            crossings.sort()
-            for left, right in zip(crossings[::2], crossings[1::2]):
-                start = max(0, math.ceil(left - 0.5))
-                end = min(sw, math.ceil(right - 0.5))
-                if end > start:
-                    pixels[y][start:end] = b"\1" * (end - start)
-    bits = ((1, 8), (2, 16), (4, 32), (64, 128))
-    rows = []
-    for y in range(height):
-        row = []
-        for x in range(width):
-            mask = sum(bits[dy][dx] for dy in range(4) for dx in range(2)
-                       if pixels[y * 4 + dy][x * 2 + dx])
-            row.append(chr(0x2800 + mask) if mask else " ")
-        rows.append("".join(row))
-    return tuple(rows)
 
 
 class Canvas:
@@ -300,6 +357,8 @@ class AudioEngine:
 
 audio = AudioEngine()
 old_settings = None
+console_input = None
+input_decoder = InputDecoder()
 
 
 def enable_windows_ansi():
@@ -313,44 +372,44 @@ def enable_windows_ansi():
 
 
 def init_keyboard():
-    global old_settings
-    if not WINDOWS and sys.stdin.isatty():
+    global old_settings, console_input, input_decoder
+    input_decoder = InputDecoder()
+    if WINDOWS:
+        try:
+            console_input = WindowsConsoleInput()
+        except OSError:
+            console_input = None
+    elif sys.stdin.isatty():
         old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
 
 
 def restore_keyboard():
-    if not WINDOWS and old_settings is not None:
+    global console_input
+    if console_input is not None:
+        console_input.restore()
+        console_input = None
+    elif not WINDOWS and old_settings is not None:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 
 def get_key():
-    """Read raw bytes: TextIO buffering otherwise hides pasted/burst input."""
+    """Decode complete input events without blocking the animation loop."""
     if WINDOWS:
+        if console_input is not None:
+            return console_input.read()
         if not msvcrt.kbhit():
-            return None
+            return input_decoder.read()
         key = msvcrt.getwch()
         if key in ("\x00", "\xe0"):
-            msvcrt.getwch()
-            return None
+            return {"H": "up", "P": "down", "M": "right", "K": "left"}.get(msvcrt.getwch())
+        input_decoder.feed(key)
     else:
-        if not select.select([sys.stdin], [], [], 0)[0]:
-            return None
-        data = os.read(sys.stdin.fileno(), 1)
-        if not data:
-            return None
-        key = data.decode("ascii", errors="ignore")
-        if not key:
-            return None
-    if key == "\x03":
-        return "quit"
-    if key == "\x1b":
-        return "escape"
-    if key in ("\x7f", "\x08"):
-        return "backspace"
-    if key in ("\r", "\n"):
-        return "enter"
-    return key.lower()
+        if select.select([sys.stdin], [], [], 0)[0]:
+            data = os.read(sys.stdin.fileno(), 4096)
+            if data:
+                input_decoder.feed(data.decode("latin1"))
+    return input_decoder.read()
 
 
 class AttackVector:
@@ -365,6 +424,7 @@ class AttackVector:
             ["TLS", "DNS", "HTTPS", "SSH"], weights=[4, 2, 5, 1])[0]
         self.flagged = random.random() < 0.23
         self.rate = random.uniform(0.8, 18.0)
+        self.critical = False
 
     def update(self, dt=1 / 30):
         self.age += dt
@@ -414,13 +474,19 @@ class CyberMonitor:
         self.speed_multiplier = clamp_speed(initial_speed)
         self.active_mode = "dashboard"
         self.view = "WORLD"
+        self.map_views = {name: MapViewport(bounds) for name, bounds in VIEWS.items()}
         self.elapsed = 0.0
         self.boot_time = time.monotonic()
+        self.last_map_interaction = self.boot_time
+        self.last_auto_zoom = self.boot_time
         self.clock_base = time.time()
         self.telemetry_timer = 0.0
         self.attack_cooldown = 0.0
         self.event_cooldown = 1.5
         self.attacks = []
+        self.critical_incident = None
+        self.critical_cooldown = random.uniform(30.0, 90.0)
+        self.incident_count = 0
         self.threat_logs = deque(maxlen=80)
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
@@ -442,6 +508,72 @@ class CyberMonitor:
         # identical timestamps. All addresses are documentation-only ranges.
         for i in range(18):
             self.generate_threat_log(timestamp=self.clock_base - (18 - i) * 3)
+        self.borders_visible = False
+        self.enable_borders()
+        self.enable_coastlines()
+
+    def enable_borders(self):
+        try:
+            load_borders()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.borders_visible = False
+            self.log(f"Country borders unavailable / {error}", "warn", "LOW")
+        else:
+            self.borders_visible = True
+
+    def enable_coastlines(self):
+        try:
+            load_coastlines()
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.coastlines_available = False
+            self.log(f"Coastlines unavailable / {error}", "warn", "LOW")
+        else:
+            self.coastlines_available = True
+
+    def handle_map_key(self, key):
+        viewport = self.map_views[self.view]
+        if key == "b":
+            if self.borders_visible:
+                self.borders_visible = False
+            else:
+                self.enable_borders()
+        elif key in ("[", "]", "wheel_up", "wheel_down"):
+            viewport.zoom_by(1.5 if key in ("]", "wheel_up") else 1 / 1.5)
+        elif key in ("h", "j", "k", "l", "left", "down", "up", "right"):
+            dx, dy = {"h": (-1, 0), "j": (0, 1), "k": (0, -1), "l": (1, 0),
+                      "left": (-1, 0), "down": (0, 1), "up": (0, -1), "right": (1, 0)}[key]
+            viewport.pan(dx, dy)
+        elif key == "0":
+            viewport.reset()
+        else:
+            return False
+        self.touch_map()
+        return True
+
+    def touch_map(self):
+        self.last_map_interaction = self.last_auto_zoom = time.monotonic()
+        if self.critical_incident is not None:
+            self.critical_incident.following = False
+
+    def update_map(self, now=None):
+        """Map camera uses wall time, independently of pause and simulation speed."""
+        now = time.monotonic() if now is None else now
+        if self.active_mode != "dashboard":
+            self.last_auto_zoom = now
+            return
+        if self.critical_incident is not None and self.critical_incident.following:
+            if self.paused:
+                self.last_auto_zoom = now
+            elif now - self.last_auto_zoom >= 0.1:
+                self.critical_incident.follow(self.map_views[self.view], min(now - self.last_auto_zoom, 0.25))
+                self.last_auto_zoom = now
+            return
+        start = max(self.last_auto_zoom, self.last_map_interaction + 10.0)
+        dt = now - start
+        # Ten small steps per second keep map rasterization off most frames.
+        if dt >= 0.1:
+            self.map_views[self.view].ease_out(min(dt, 0.25))
+            self.last_auto_zoom = now
 
     def timestamp(self):
         return time.strftime("%H:%M:%S", time.gmtime(self.clock_base + self.elapsed))
@@ -484,7 +616,60 @@ class CyberMonitor:
                      "warn", "MED", dst[3])
         audio.play_packet()
 
+    def start_critical_incident(self):
+        if self.critical_incident is not None:
+            return
+        # Long enough to trace visibly, without a date-line jump or polar path.
+        corridors = [
+            ("New York", "London"), ("San Francisco", "Toronto"),
+            ("Athens", "Dubai"), ("Beijing", "Singapore"),
+            ("Lagos", "Cape Town"), ("Sao Paulo", "Santiago"),
+            ("Sydney", "Jakarta"), ("Moscow", "Delhi"),
+        ]
+        cities = {city[2]: city for city in CITIES}
+        src_name, dst_name = random.choice(corridors)
+        route = AttackVector(cities[src_name], cities[dst_name], self.palette)
+        if len(self.attacks) >= 12:
+            self.attacks.pop(0)
+        self.attacks.append(route)
+        self.incident_count += 1
+        self.critical_incident = CriticalIncident(route, self.incident_count)
+        self.critical_cooldown = random.uniform(30.0, 90.0)
+        self.last_auto_zoom = time.monotonic()
+        self.log(f"{self.critical_incident.identifier} / Data exfiltration detected / "
+                 f"{route.src_city[3]} > {route.dst_city[3]}", "warn", "CRIT", route.dst_city[3])
+        audio.play_success()
+
+    def update_critical_incident(self, dt):
+        if self.paused or self.active_mode != "dashboard":
+            return
+        self.critical_cooldown -= max(0.0, dt)
+        incident = self.critical_incident
+        if incident is None:
+            if self.critical_cooldown <= 0:
+                self.start_critical_incident()
+            return
+        for stage in incident.update(dt):
+            messages = {
+                "TRACING FLOW": "Payload signature confirmed; tracing exfiltration route",
+                "QUARANTINING": "Destination isolated; revoking session credentials",
+                "CONTAINED": "Exfiltration contained; egress blocked and session revoked",
+            }
+            self.log(f"{incident.identifier} / {messages[stage]}",
+                     "success" if stage == "CONTAINED" else "warn",
+                     "LOW" if stage == "CONTAINED" else "CRIT", incident.route.dst_city[3])
+            if stage == "CONTAINED":
+                self.blocked += 1
+                self.rule_hits[3] += 1
+                audio.play_success()
+        if incident.complete:
+            self.attacks[:] = [route for route in self.attacks if route is not incident.route]
+            self.critical_incident = None
+            self.last_auto_zoom = time.monotonic()
+
     def update(self, dt=1 / 30):
+        self.update_critical_incident(dt)
+        self.update_map()
         if self.paused:
             return
         if self.active_mode == "breach":
@@ -495,6 +680,8 @@ class CyberMonitor:
         sim_dt = max(0.0, dt) * self.speed_multiplier
         self.elapsed += sim_dt
         for attack in self.attacks:
+            if attack.critical:
+                continue
             attack.update(sim_dt)
             if attack.complete and attack.flagged:
                 self.blocked += 1
@@ -544,6 +731,10 @@ class CyberMonitor:
             ("THROUGHPUT", f"{self.metrics['NET']:.1f} Mb/s", "aggregate ingress", "accent"),
             ("SENSORS", f"{self.sensors_online:02d} / {len(CITIES):02d}", "all regions online", "success"),
         ]
+        if self.critical_incident is not None:
+            incident = self.critical_incident
+            cards[0] = ("PRIORITY INCIDENT", "CONTAINED" if incident.contained else "CRITICAL P1",
+                        f"{incident.identifier} / EXFILTRATION", "success" if incident.contained else "warn")
         for i, (title, value, hint, color) in enumerate(cards):
             x = i * (width + 1) // 4
             end = (i + 1) * (width + 1) // 4 - 1
@@ -552,20 +743,46 @@ class CyberMonitor:
             self.text(px, py + 2, pw, hint, "muted")
 
     def draw_map(self, x, y, w, h):
-        px, py, pw, ph = self.panel(x, y, w, h, f"GLOBAL TRAFFIC / {self.view}")
-        flagged = sum(route.flagged for route in self.attacks)
-        self.text(px, py, pw, f"{len(self.attacks):02d} active flows   {flagged:02d} under review", "muted")
+        incident = self.critical_incident
+        title = f"PRIORITY TRACK / {incident.identifier}" if incident else f"GLOBAL TRAFFIC / {self.view}"
+        px, py, pw, ph = self.panel(x, y, w, h, title)
+        visible_routes = [route for route in self.attacks if not route.complete]
+        flagged = sum(route.flagged for route in visible_routes)
+        if incident:
+            route = incident.route
+            self.text(px, py, pw, f"{incident.stage} / {route.src_city[3]} > {route.dst_city[3]} / "
+                      f"{round(route.progress * 100):02d}%", "success" if incident.contained else "warn")
+        else:
+            self.text(px, py, pw, f"{len(visible_routes):02d} active flows   {flagged:02d} under review", "muted")
         mh = ph - 2
         if mh < 2:
             return
         my = py + 1
-        for row, texture in enumerate(map_texture(pw, mh, self.view)):
+        viewport = self.map_views[self.view]
+        bounds = viewport.bounds
+        textures = (coastline_texture(pw, mh, bounds) if self.coastlines_available
+                    else (" " * pw,) * mh)
+        for row, texture in enumerate(textures):
             self.text(px, my + row, pw, texture, "map_land")
+        if self.borders_visible:
+            for row, borders in enumerate(border_texture(pw, mh, bounds)):
+                for col, border in enumerate(borders):
+                    if border == " ":
+                        continue
+                    coastline = textures[row][col]
+                    if coastline != " ":
+                        mask = (ord(coastline) - 0x2800) | (ord(border) - 0x2800)
+                        char, color = chr(0x2800 + mask), "map_land"
+                    else:
+                        char, color = border, "map_border"
+                    self.canvas.write_char(px + col, my + row, char, self.palette[color])
         # Routes use a shallow Bezier arc in screen coordinates. Land remains
         # dim while active flow heads carry the brightest color on the map.
-        for route in self.attacks:
-            sx, sy = project(*route.src_city[:2], pw, mh, VIEWS[self.view])
-            dx, dy = project(*route.dst_city[:2], pw, mh, VIEWS[self.view])
+        for route in visible_routes:
+            if route.critical:
+                continue
+            sx, sy = project(*route.src_city[:2], pw, mh, bounds)
+            dx, dy = project(*route.dst_city[:2], pw, mh, bounds)
             cx = (sx + dx) / 2
             cy = max(-1, (sy + dy) / 2 - min(3, abs(dx - sx) * 0.06))
             progress = route.progress
@@ -582,19 +799,49 @@ class CyberMonitor:
             fy = round((1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t * t * dy)
             if 0 <= fx < pw and 0 <= fy < mh:
                 self.canvas.write_char(px + fx, my + fy, "●", self.palette["warn" if route.flagged else "packet"])
+        # A persistent geographic trail stays attached to the tracked packet
+        # while the camera moves. It remains above ordinary traffic and borders.
+        if incident:
+            steps = 180
+            for step in range(steps + 1):
+                t = step / steps
+                if t > incident.route.progress:
+                    if step % 3:
+                        continue
+                    char, color = "·", "muted"
+                else:
+                    char = "•"
+                    color = "success" if incident.contained else "critical_trail"
+                fx, fy = project(*incident.position(t), pw, mh, bounds)
+                fx, fy = round(fx), round(fy)
+                if 0 <= fx < pw and 0 <= fy < mh:
+                    self.canvas.write_char(px + fx, my + fy, char, self.palette[color])
         # Place only labels that fit without covering another label or node.
         occupied = set()
-        nodes = []
+        groups = {}
         for city in CITIES:
-            nx, ny = project(*city[:2], pw, mh, VIEWS[self.view])
+            nx, ny = project(*city[:2], pw, mh, bounds)
             nx, ny = round(nx), round(ny)
             if 0 <= nx < pw and 0 <= ny < mh:
-                nodes.append((nx, ny, city))
+                groups.setdefault((nx, ny), []).append(city)
                 occupied.add((nx, ny))
+        flagged_codes = {r.dst_city[3] for r in visible_routes if r.flagged}
+        active_codes = {c[3] for r in visible_routes for c in (r.src_city, r.dst_city)}
+
+        def priority(city):
+            return (incident is not None and city in (incident.route.src_city, incident.route.dst_city),
+                    city[3] in flagged_codes, city[3] in active_codes)
+
+        # Several cities can share a cell at world scale. Show the busiest node
+        # in each cell and place its label before quieter neighbors.
+        nodes = [(nx, ny, max(cities, key=priority)) for (nx, ny), cities in groups.items()]
+        nodes.sort(key=lambda node: priority(node[2]), reverse=True)
         for nx, ny, city in nodes:
-            flagged = any(r.flagged and r.dst_city == city for r in self.attacks)
+            flagged = city[3] in flagged_codes
             self.canvas.write_char(px + nx, my + ny, "◆" if flagged else "•",
                                    self.palette["warn" if flagged else "accent"])
+            if city[3] not in active_codes:
+                continue
             for lx, ly in ((nx + 2, ny), (nx - 4, ny), (nx - 1, ny + 1)):
                 cells = {(lx + i, ly) for i in range(3)}
                 if (0 <= lx and lx + 3 <= pw and 0 <= ly < mh
@@ -602,7 +849,19 @@ class CyberMonitor:
                     self.text(px + lx, my + ly, 3, city[3], "text")
                     occupied.update(cells)
                     break
-        self.text(px, py + ph - 1, pw, "• sensor   ● flow   ◆ review   R change region", "muted")
+        if incident:
+            fx, fy = project(*incident.position(), pw, mh, bounds)
+            fx, fy = round(fx), round(fy)
+            color = "success" if incident.contained else "critical_head"
+            # Target reticle and packet head are drawn last, above node labels.
+            for ox, oy, char in ((-1, 0, "["), (1, 0, "]"), (0, -1, "│"),
+                                 (0, 1, "│"), (0, 0, "◉")):
+                if 0 <= fx + ox < pw and 0 <= fy + oy < mh:
+                    self.canvas.write_char(px + fx + ox, my + fy + oy, char, self.palette[color])
+        latitude = f"{abs(viewport.latitude):.2f}°{'N' if viewport.latitude >= 0 else 'S'}"
+        longitude = f"{abs(viewport.longitude):.2f}°{'E' if viewport.longitude >= 0 else 'W'}"
+        self.text(px, py + ph - 1, pw,
+                  f"{latitude}  {longitude}  /  {viewport.zoom:.1f}x", "muted")
 
     def draw_health(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "COLLECTOR HEALTH")
@@ -638,7 +897,7 @@ class CyberMonitor:
         for i, (stamp, severity, sensor, message, status) in enumerate(visible[:ph - 1]):
             ry = py + i + 1
             self.text(px, ry, 8, stamp, "muted")
-            color = "warn" if severity in ("MED", "HIGH") else "success" if severity == "LOW" else "muted"
+            color = "warn" if severity in ("MED", "HIGH", "CRIT") else "success" if severity == "LOW" else "muted"
             self.text(px + 10, ry, 4, severity, color)
             self.text(px + 15, ry, 3, sensor, "accent")
             self.text(px + 20, ry, pw - 20, message, "text")
@@ -646,12 +905,16 @@ class CyberMonitor:
     def draw_flows(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "ACTIVE FLOWS")
         self.text(px, py, pw, "ROUTE      PROTO  Mb/s  POLICY", "muted")
-        for i, route in enumerate(self.attacks[-max(0, ph - 2):]):
+        routes = sorted(self.attacks, key=lambda route: route.critical, reverse=True)
+        for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
                 break
-            policy = "REVIEW" if route.flagged else "ALLOW"
+            policy = ("BLOCKED" if self.critical_incident.contained else "TRACE") if route.critical else (
+                "REVIEW" if route.flagged else "ALLOW")
             value = f"{route.src_city[3]} > {route.dst_city[3]}  {route.kind:<5} {route.rate:4.1f}  {policy}"
-            self.text(px, py + i + 1, pw, value, "warn" if route.flagged else "text")
+            color = "critical_ok" if route.critical and self.critical_incident.contained else (
+                "critical" if route.critical else "warn" if route.flagged else "text")
+            self.text(px, py + i + 1, pw, value, color)
         if not self.attacks and ph > 2:
             self.text(px, py + 2, pw, "Waiting for next flow...", "muted")
         if ph > 2:
@@ -668,9 +931,16 @@ class CyberMonitor:
             return
         self.text(1, 0, width - 2, "GLOBAL THREAT MONITOR", "accent")
         state = "PAUSED" if self.paused else "LIVE"
-        header = f"{state}  /  SIMULATION  /  {self.timestamp()} UTC"
+        header = f"{state}  /  {self.timestamp()} UTC"
         self.text(width - len(header) - 1, 0, len(header), header, "muted")
-        self.text(1, 1, width - 2, "SECURITY OPERATIONS  /  Distributed sensor telemetry", "muted")
+        if self.critical_incident is not None:
+            incident = self.critical_incident
+            banner = f" P1 {incident.identifier} / {incident.stage} / "
+            banner += f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}"
+            self.text(1, 1, width - 2, banner.ljust(width - 2),
+                      "critical_ok" if incident.contained else "critical")
+        else:
+            self.text(1, 1, width - 2, "SECURITY OPERATIONS  / Distributed sensor telemetry", "muted")
         self.draw_kpis(3)
         left_w = int(width * 0.64)
         right_x = left_w + 1
@@ -683,19 +953,13 @@ class CyberMonitor:
         self.draw_health(right_x, 8, right_w, top_h)
         self.draw_events(0, lower_y, left_w, lower_h)
         self.draw_flows(right_x, lower_y, right_w, lower_h)
-        footer = "Q quit  P pause  T theme  R region  A flow  C shell  G drill  +/- speed  S audio"
-        self.text(1, height - 1, width - 2, footer, "muted")
-        if width >= 105:
-            detail = f"{self.palette['name']}  {self.speed_multiplier:.2f}x"
-            self.text(width - len(detail) - 1, height - 1, len(detail), detail, "accent")
 
     def draw_shell_screen(self):
         width, height = self.canvas.width, self.canvas.height
-        px, py, pw, ph = self.panel(0, 0, width, height - 2, "SIMULATION CONSOLE")
+        px, py, pw, ph = self.panel(0, 0, width, height - 2, "OPERATIONS CONSOLE")
         for i, line in enumerate(list(self.shell_history)[-max(0, ph - 2):]):
             self.text(px, py + i, pw, line, "text")
         self.text(px, height - 4, pw, f"analyst@monitor:~$ {self.shell_input}▏", "accent")
-        self.text(1, height - 1, width - 2, "Enter run command  /  Esc return  /  Ctrl+C quit  /  help list commands", "muted")
 
     def process_shell_command(self, cmd):
         command = cmd.strip().lower()
@@ -726,13 +990,15 @@ class CyberMonitor:
             self.shell_history.clear()
         elif command == "enhance":
             self.view = "EUROPE"
+            self.map_views[self.view].reset()
+            self.touch_map()
             self.active_mode = "dashboard"
         elif command == "ddos-localhost":
             self.shell_history.append("Loopback burst simulated. Rate-limit policy applied. No packets sent.")
         elif command == "nuke-gibson":
             self.start_drill()
         elif command:
-            self.shell_history.append(f"Unknown command: {command}. Type help.")
+            self.shell_history.append(f"Unknown command: {command}")
 
     def start_drill(self):
         self.active_mode = "breach"
@@ -743,18 +1009,19 @@ class CyberMonitor:
         width, height = self.canvas.width, self.canvas.height
         bw, bh = min(66, width - 4), 13
         x, y = (width - bw) // 2, (height - bh) // 2
-        px, py, pw, _ = self.panel(x, y, bw, bh, "CONTAINMENT DRILL / SIMULATED")
+        px, py, pw, _ = self.panel(x, y, bw, bh, "CONTAINMENT DRILL")
         self.text(px, py + 1, pw, "Unusual egress activity detected", "warn")
         self.text(px, py + 3, pw, f"Response window  {self.breach_time_left:4.1f} seconds", "accent")
-        self.text(px, py + 5, pw, "Press any key to apply containment steps", "text")
+        self.text(px, py + 5, pw, "CONTAINMENT PIPELINE", "text")
         filled = round(self.breach_taps / 15 * (pw - 8))
         self.text(px, py + 7, pw, f"{'━' * filled}{'·' * (pw - 8 - filled)} {self.breach_taps:02d}/15", "success")
-        self.text(px, py + 9, pw, "Esc cancel  /  Q quit", "muted")
 
     def handle_key(self, key):
         """Return False to quit. Escape and q stay distinct inside the console."""
         if key == "quit":
             return False
+        if key in ("wheel_up", "wheel_down") and self.active_mode != "dashboard":
+            return True
         if self.active_mode == "shell":
             if key == "escape":
                 self.active_mode = "dashboard"
@@ -788,16 +1055,21 @@ class CyberMonitor:
         elif key == "r":
             keys = list(VIEWS)
             self.view = keys[(keys.index(self.view) + 1) % len(keys)]
+            self.map_views[self.view].reset()
+            self.touch_map()
+        elif self.handle_map_key(key):
+            pass
         elif key == "s":
             self.toggle_sound()
         elif key == "a":
             self.trigger_attack()
+        elif key == "f":
+            self.start_critical_incident()
         elif key == "c":
             self.active_mode = "shell"
             self.shell_input = ""
             if not self.shell_history:
-                self.shell_history.extend(["Simulation console. Type help for commands.",
-                                           "Telemetry is generated locally. Commands do not access the network."])
+                self.shell_history.append(f"Session established / {self.sensors_online} collectors online")
         elif key == "g":
             self.start_drill()
         elif key in ("+", "=", "-"):
@@ -809,7 +1081,8 @@ class CyberMonitor:
 def main():
     parser = argparse.ArgumentParser(
         prog="global-threat-monitor", description=f"{APP_NAME} v{APP_VERSION}. {APP_DESCRIPTION}",
-        epilog="Keys: Q/Esc quit, P pause, T theme, R region, A flow, C console, G drill, +/- speed, S audio.")
+        epilog="Keys: Q/Esc quit, P pause, T theme, R region, B borders, wheel/[ ] zoom, arrows/HJKL pan, "
+               "0 reset, A flow, F critical incident, C console, G drill, +/- speed, S audio.")
     parser.add_argument("-t", "--theme", choices=list(THEMES), help="Set startup theme.")
     parser.add_argument("-s", "--sound", action="store_true", help="Enable optional Windows chimes.")
     parser.add_argument("-n", "--no-sound", action="store_true", help="Mute chimes.")
@@ -831,7 +1104,7 @@ def main():
     deadline = previous_time
     try:
         init_keyboard()
-        sys.stdout.write("\033[?1049h\033[?25l\033[H\033[2J")
+        sys.stdout.write("\033[?1049h\033[?25l\033[H\033[2J" + (MOUSE_ON if not WINDOWS else ""))
         sys.stdout.flush()
         running = True
         while running:
@@ -857,7 +1130,6 @@ def main():
                 monitor.canvas.clear()
                 monitor.text(0, 1, monitor.canvas.width, "Global Threat Monitor", "accent")
                 monitor.text(0, 3, monitor.canvas.width, f"Resize to at least {MIN_WIDTH}x{MIN_HEIGHT}. Current: {size.columns}x{size.lines}.")
-                monitor.text(0, 5, monitor.canvas.width, "Q / Esc quit", "muted")
             else:
                 monitor.update(dt)
                 monitor.draw()
@@ -876,7 +1148,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        sys.stdout.write("\033[0m\033[?25h\033[?1049l")
+        sys.stdout.write((MOUSE_OFF if not WINDOWS else "") + "\033[0m\033[?25h\033[?1049l")
         sys.stdout.flush()
         restore_keyboard()
 

@@ -10,9 +10,12 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 
 - Fullscreen dashboard with summary cards and readable, severity-coded events
 - Braille world map with geographically positioned sensors and curved traffic routes
+- MapSCII-style detailed Braille coastlines, with zoom and pan
+- Country borders and 128 city sensors across the Americas, Europe, Africa, Asia and Oceania
 - World, Europe, Asia, and Americas views, selected with `R`
 - Plausible simulated CPU, memory, temperature, latency, and ingress telemetry
 - Traffic history, detection counts, and an active-flow table
+- Critical incidents every 30–90 seconds with a camera follow and staged containment
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
 - Four color themes with a persisted selection
@@ -73,9 +76,17 @@ python global-threat-monitor.py --no-sound
 Q / ESC   Quit
 T         Cycle theme
 R         Cycle world / Europe / Asia / Americas
+B         Toggle country borders
+Wheel up  Zoom map in
+Wheel down Zoom map out
+Arrows    Pan map up / down / left / right
+[ / ]     Zoom map out / in
+H J K L   Pan map left / down / up / right
+0         Reset the current regional view
 P         Pause / resume
 S         Toggle sound
 A         Add a simulated traffic flow
+F         Trigger a critical incident immediately
 C         Open simulation console. Esc returns to the dashboard
 G         Start a containment drill. Press keys to complete; Esc cancels
 + / =     Increase speed
@@ -85,6 +96,59 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 In the console, enter `help`, `status`, `flows`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
+
+## Braille map
+
+The dashboard always uses detailed Braille coastlines inspired by
+[MapSCII](https://github.com/rastapasta/mapscii). The renderer uses the same
+projection as v4's sensors and curved traffic routes, and keeps the changed-cell
+rendering. Zoom and pan work while paused. `R`
+switches regions and resets the selected region's viewport; `0` resets the current
+view. `+` and `-` still change simulation speed.
+
+Scroll the mouse wheel up to zoom in and down to zoom out anywhere in the
+dashboard. Arrow keys pan the map. The existing `[` / `]` and `H J K L` controls
+also work. Mouse scrolling is ignored in the simulation console and drill.
+
+After 10 seconds without a map interaction, the map gradually zooms out and
+recenters toward the current region's overview. Zooming, panning, changing
+regions, resetting the map or toggling borders restarts the timer. This camera
+behavior uses real time and continues while the simulation is paused; it stops
+while the console or drill is open. Scroll or pan to stop the automatic zoom-out.
+
+Every 30–90 seconds of active dashboard time, a simulated priority incident
+triggers a red P1 banner and focuses the map on an exfiltration flow. The camera
+zooms in and follows the packet along a persistent trail, with a target reticle,
+priority flow row and timestamped acquisition, tracing and quarantine events.
+After containment, the banner turns green and the map resumes gradual zoom-out.
+Each sequence lasts about 21 seconds. Incident timing is independent of simulation
+speed and freezes while paused or while the console or drill is open.
+Press `F` to preview a critical incident immediately.
+
+Map controls immediately stop the automatic follow and leave the incident
+running with a manual camera. Idle zoom-out waits while the camera is tracking
+the incident. The underlying traffic remains a local simulation.
+
+Country borders are shown by default; press `B` to hide or
+restore them. Borders use a muted color beneath city markers and traffic routes.
+The map has 128 city sensors, including Athens, Paris, Toronto, Lagos, Seoul and
+Auckland. Cities appear as dots. A city's code appears only while it is the source
+or destination of an active trace and disappears when that trace completes.
+Labels avoid each other and city markers; when multiple cities share a terminal
+cell, active or flagged sensors take priority.
+
+The map runs offline with the Python standard library. Keep `terminal_map.py`, `terminal_input.py`, `critical_flow.py`,
+`world_coastlines.json` and `world_borders.json` alongside the main script. Missing
+or invalid coastline data records an event; sensors, routes and available borders
+continue to render.
+Unavailable border data leaves the map usable without country borders.
+
+The bundled data is [Natural Earth's 1:110m coastline](https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_coastline.geojson),
+rounded to three decimal places. Natural Earth data is
+[public domain](https://www.naturalearthdata.com/about/terms-of-use/). This is a
+world and regional overview with zoom capped at 8x; it has no street tiles or
+points of interest. Borders use [Natural Earth's 1:110m Admin 0 land boundary lines](https://github.com/nvkelso/natural-earth-vector/blob/master/geojson/ne_110m_admin_0_boundary_lines_land.geojson),
+also rounded to three decimal places.
 
 ## Configuration
 
@@ -121,7 +185,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python -m unittest -v test_monitor
+python -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.
