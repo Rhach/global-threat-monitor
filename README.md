@@ -17,7 +17,7 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - Traffic history, detection counts, and an active-flow table
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
-- Critical incidents every 30–90 seconds with a camera follow and staged containment
+- Correlated critical incidents with camera follow and explicit scoped response
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
 - Four color themes with a persisted selection
@@ -97,7 +97,7 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario`, `incident`, `timeline [N]`, `incidents`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -247,13 +247,13 @@ recurrence is an observation; the simulation makes no command-and-control
 technique claim. TLS payload content is unavailable. No signature confirmation,
 automatic blocking or credential revocation is inferred from this evidence.
 The existing keyboard drill is a separate simulation exercise and does not
-resolve this incident. Consequential response is a later slice.
+resolve this incident. The operator can apply the consequential responses below.
 
 Every observation has an immutable incident ID, evidence ID, timestamp, asset
 IDs, collector ID and (when applicable) session ID. The same session IDs appear
 in `flows` and `flow-history`; the priority row shows its incident ID. At the end,
 the banner clears and live flows disappear, while the last 64 incident summaries
-retain up to 32 observations and four scenario sessions each. Ordinary completed
+retain up to 64 timeline records and four scenario sessions each. Ordinary completed
 session history remains limited to 120; an incident's original evidence survives
 that session-history eviction. History is retained only for the running process.
 
@@ -286,6 +286,74 @@ After 49 simulation seconds (196 real seconds at this speed), pause and inspect
 Resume past 74 simulation seconds, then inspect `incident`, `timeline 11`,
 `incidents`, and `flow-history` for its unresolved retained outcome. Automatic
 scheduling starts the next scenario only after the current one finishes.
+
+## Scoped response and verification
+
+Enter `response` in the console to preview the current incident's flow IDs,
+targets and scope. Then use an explicit command:
+
+| Command | Applied scope |
+| --- | --- |
+| `block session FLOW-00004` | Stop this incident session; other and future sessions remain allowed |
+| `block peer ATH-WS1 EXT-DXB` | Stop egress from that local asset to that peer, including future sessions |
+| `isolate endpoint ATH-WS1` | Stop all incoming/outgoing modeled network activity on the local endpoint, including legitimate work |
+| `revoke session FLOW-00004` | Revoke this incident session only |
+| `revoke credential aster.ws1` | Stop current/future sessions explicitly using the scenario's modeled credential |
+
+Use the actual flow ID printed by `response`; IDs depend on other generated
+activity. Remote peers cannot be locally isolated. Unknown targets are rejected
+without an action or counter change. `aster.ws1` is the modeled credential on
+scenario sessions; other sessions have no credential unless explicitly assigned
+in the model. Credential revocation therefore does not isolate the endpoint.
+
+A request gets a stable `CT-...-ACT-...` ID. It applies exactly **one simulation
+second after request** and verifies its scope **one second after application**.
+`actions`, `incident` and `timeline` preserve phase timestamps and results; the
+banner and live flow row show the same current action status. Completed/denied
+session summaries link the effective action ID. `retry ACTION-ID` or repeating
+the identical command returns the existing action; counters increment once on
+application. `cancel ACTION-ID` cancels a pending request before application.
+Retrying a cancelled action returns its cancellation; it does not apply it.
+
+Byte totals freeze at the application timestamp, directional rates become zero,
+and activity heads/trails disappear together. Historical bytes and original
+observations remain available. The current throughput card still represents the
+last complete one-second bucket, including bytes sent up to application; the
+next full bucket reflects the stopped traffic. Unrelated traffic continues.
+Pause freezes application and verification delays; speed scales these delays
+with the same simulation clock as transfers. Rendering FPS changes neither.
+
+An early session-only block verifies that scope while later recurring sessions
+remain possible. Blocking the final upload with no remaining/planned incident
+network activity verifies containment for this scenario. A late session action
+that applies after natural completion reports no matching active transfer and
+leaves the incident unresolved. Verified endpoint/peer/credential policies
+cancel remaining scenario network stages and also deny matching sessions in
+future scenarios; those denied sessions have zero bytes and no live map route.
+Policies persist for the running process. There is no automatic success script:
+an unchecked scenario still ends unresolved. The banner retires at the normal
+74s scenario boundary, or after outstanding responses settle if requested late.
+
+Each incident retains at most eight response actions. The 64-record timeline
+covers original scenario evidence plus their response phases. Session-only
+responses create no persistent policy; persistent policies are bounded by the
+finite catalog of endpoint, peer and credential scopes. Incident and session
+history limits remain 64 and 120 respectively; all state is in memory.
+
+Run the exact-clock demonstration and response fixtures:
+
+```bash
+python3 demo_response.py
+python3 -m unittest -v test_response_actions
+```
+
+The demonstration requests a final-upload block at t=49s, applies it at t=50s
+with 12,000,000 originator bytes, verifies at t=51s, and preserves the legitimate
+backup. For interactive use, trigger `F`, wait for the unusual-volume observation,
+pause with `P`, open `C`, enter `response`, and request `block session` with the
+printed upload ID. Return with Esc and resume with `P`; inspect `actions` and
+`flow-history` after two simulation seconds. Compare `isolate endpoint ATH-WS1`
+in a fresh process to see legitimate workstation traffic stop as well.
 
 ## Braille map
 
@@ -375,7 +443,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation
+python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.

@@ -490,7 +490,9 @@ class CyberMonitor:
         self.clock_base = time.time()
         self.attacks = []
         self.incidents = IncidentSimulation(self.simulation, self.incident_route,
-                                             self.log_observation, seed=seed)
+                                             self.log_observation, seed=seed,
+                                             on_completed=self.complete_session,
+                                             on_applied=self.response_applied)
         self.threat_logs = deque(maxlen=80)
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
@@ -503,6 +505,7 @@ class CyberMonitor:
         self.total_events = 0
         self._sample_events = 0
         self.blocked = 0
+        self.response_counts = {"block": 0, "isolate": 0, "revoke": 0}
         self.rule_hits = [0, 0, 0, 0]
         self.last_eps = 0
         self.sensors_online = len(self.organization.collectors)
@@ -598,9 +601,14 @@ class CyberMonitor:
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
                              self.palette, connection, session)
-        if session is not None:
+        if session is not None and not session.complete:
             self.attacks.append(route)
+        route.update(0)
         return route
+
+    def response_applied(self, action):
+        self.blocked += 1
+        self.response_counts[action.kind] += 1
 
     def log_observation(self, observation):
         self.log(observation.summary(), "warn", "CRIT", "ATH")
@@ -654,6 +662,9 @@ class CyberMonitor:
 
     def add_session_route(self, session):
         connection = session.connection
+        if session.complete:
+            self.log(f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success")
+            return None
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
                              self.palette, connection, session)
@@ -726,7 +737,7 @@ class CyberMonitor:
         width = self.canvas.width
         cards = [
             ("EVENTS / SEC", f"{self.last_eps:,}", "observations / 1s", "accent"),
-            ("CONTAINED", f"{self.blocked:,}", "policy actions", "success"),
+            ("POLICY ACTIONS", f"{self.blocked:,}", "applied once", "success"),
             ("THROUGHPUT", f"{self.metrics['NET']:.1f} Mb/s", "payload / last 1s", "accent"),
             ("SENSORS", f"{self.sensors_online:02d} / {len(CITIES):02d}", "all regions online", "success"),
         ]
@@ -923,7 +934,8 @@ class CyberMonitor:
         for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
                 break
-            policy = self.critical_incident.identifier if route.critical else (
+            policy = (self.critical_incident.response_status if self.critical_incident.actions else
+                      self.critical_incident.identifier) if route.critical else (
                 "REVIEW" if route.flagged else "ALLOW")
             if route.connection is None:
                 context = f"{route.src_city[3]}>{route.dst_city[3]}"
@@ -964,7 +976,8 @@ class CyberMonitor:
         if self.critical_incident is not None:
             incident = self.critical_incident
             banner = f" P1 {incident.identifier} / {incident.stage} / "
-            banner += f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}"
+            banner += (incident.response_status if incident.actions else
+                       f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}")
             self.text(1, 1, width - 2, banner.ljust(width - 2),
                       "critical_ok" if incident.contained else "critical")
         else:
@@ -1002,6 +1015,11 @@ class CyberMonitor:
                 "incident        Active or most recent incident facts and session IDs",
                 "timeline [N]    Retained observations; N selects one at small sizes",
                 "incidents       Retained unresolved summaries (last 64)",
+                "response        Preview explicit incident targets/scopes",
+                "block session FLOW-ID | block peer ASSET-ID PEER-ID",
+                "isolate endpoint ASSET-ID | revoke credential aster.ws1",
+                "revoke session FLOW-ID | retry ACTION-ID | cancel ACTION-ID",
+                "actions         Requested/applied/verified results and timestamps",
                 "org             List sites, assets, expected peers and collectors",
                 "baseline        Athens workstation > expected Frankfurt service",
                 "unfamiliar      Athens workstation > peer with unknown geography",
@@ -1019,11 +1037,50 @@ class CyberMonitor:
                 f"Payload: {self.metrics['NET']:.4f} Mb/s / previous complete 1s bucket; "
                 f"total {self.simulation.total_bytes:,} bytes; no hidden aggregate",
                 f"Latency: {self.metrics['LATENCY']:.1f} ms / modeled load estimate",
-                f"Processed: {self.total_events:,}; contained: {self.blocked:,}",
+                f"Processed: {self.total_events:,}; applied policy actions: {self.blocked:,}",
+                f"Response counts: {self.response_counts}",
             ])
         elif command == "scenario":
             incident = self.start_critical_incident()
             self.shell_history.append(incident.summary() if incident else "Scenario deferred: session limit")
+        elif command == "response":
+            incident = self.critical_incident
+            self.shell_history.extend([
+                "Response preview: apply after 1 sim second, verify after another 1s.",
+                "block session FLOW-ID: this incident flow only; future flows allowed",
+                "block peer ATH-WS1 EXT-DXB: egress to peer, including future flows",
+                "isolate endpoint ATH-WS1: all local endpoint traffic, benign included",
+                "revoke credential aster.ws1: only sessions using this credential",
+                "revoke session FLOW-ID: this incident flow only",
+                "Use the explicit command above to request; cancel ACTION-ID before apply.",
+                "Current incident: " + (incident.identifier if incident else "none"),
+                "Incident flow IDs: " + (", ".join(s.identifier for s in incident.sessions)
+                                        if incident else "none"),
+            ])
+        elif command == "actions":
+            incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
+            if incident and incident.actions:
+                for action in incident.actions:
+                    self.shell_history.extend(action.detail_lines())
+            else:
+                self.shell_history.append("No response actions")
+        elif command.split(" ")[0] in ("block", "isolate", "revoke", "retry", "cancel"):
+            parts = cmd.strip().split()
+            try:
+                kind = parts[0].lower()
+                if kind in ("retry", "cancel") and len(parts) == 2:
+                    action = (self.incidents.cancel_response(parts[1].upper()) if kind == "cancel" else
+                              self.incidents.request_response("", "", "", action_id=parts[1].upper()))
+                elif len(parts) == 3 or (kind == "block" and len(parts) == 4):
+                    scope = parts[1].lower()
+                    action = self.incidents.request_response(
+                        kind, scope, parts[2].lower() if scope == "credential" else parts[2].upper(),
+                        parts[3].upper() if len(parts) == 4 else "")
+                else:
+                    raise ValueError("Enter response to preview valid targets and explicit scopes")
+                self.shell_history.extend(action.detail_lines())
+            except ValueError as error:
+                self.shell_history.append("Response error: " + str(error))
         elif command in ("incident", "timeline", "incidents") or command.startswith("timeline "):
             incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
             if command == "incidents":
@@ -1072,8 +1129,11 @@ class CyberMonitor:
                     self.shell_history.append("Flow limit reached; wait for activity to finish")
                     break
                 route = self.trigger_attack(self.organization.connect(source, peer, service))
-                self.shell_history.append(self.organization.context(route.connection))
-                self.shell_history.extend(route.session.detail_lines())
+                if route:
+                    self.shell_history.append(self.organization.context(route.connection))
+                    self.shell_history.extend(route.session.detail_lines())
+                else:
+                    self.shell_history.append("Session denied by applied policy or capacity limit")
         elif command == "org":
             self.shell_history.append(f"Aster: {len(self.organization.collectors)} city collectors; "
                                       "collector location does not locate a remote peer")

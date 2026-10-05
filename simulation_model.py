@@ -47,6 +47,8 @@ class Session:
         self.proto, self.resp_port, self.encryption, self.lifetime, self.segments = self.PROFILES[self.service]
         self.profile = profile or "baseline"
         self.incident_id = None
+        self.credential_id = None
+        self.response_action_id = None
         if profile is not None:
             if profile != "outbound_bulk" or self.service != "HTTPS":
                 raise ValueError("Unsupported session profile: " + str(profile))
@@ -108,12 +110,22 @@ class Session:
         if self.complete:
             self.orig_rate = self.resp_rate = 0.0
 
+    def stop(self, now, state, action_id):
+        if self.complete:
+            return False
+        self.stopped_at = now
+        self.state = state
+        self.response_action_id = action_id
+        self.advance_to(now)
+        return True
+
     def summary(self):
         return (f"{self.identifier} {self.proto}/{self.service} encryption={self.encryption} "
                 f"ports={self.orig_port}>{self.resp_port} {self.state}/{self.conn_state} "
                 f"duration={self.duration:.2f}s orig/resp_bytes={self.orig_bytes}/{self.resp_bytes} "
                 f"orig/resp_pkts={self.orig_pkts}/{self.resp_pkts} "
-                f"orig/resp_Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)")
+                f"orig/resp_Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)" +
+                (f" / action={self.response_action_id}" if self.response_action_id else ""))
 
     def detail_lines(self):
         """Console facts stay readable at the minimum terminal width."""
@@ -121,7 +133,9 @@ class Session:
                 f"ports={self.orig_port}>{self.resp_port} {self.state}/{self.conn_state}",
                 f"  duration={self.duration:.2f}s orig/resp_bytes={self.orig_bytes}/{self.resp_bytes}",
                 f"  orig/resp_pkts={self.orig_pkts}/{self.resp_pkts} "
-                f"Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)")
+                f"Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)") + (
+                    (f"  action={self.response_action_id} credential={self.credential_id or 'none'}",)
+                    if self.response_action_id else ())
 
 
 class SessionSimulation:
@@ -151,14 +165,38 @@ class SessionSimulation:
         self.next_spawn = 0.0
         self.automatic = True
         self.throughput = 0.0
+        # Persistent scope is bounded by the finite asset/peer/credential catalog.
+        # Session-only responses need no retained policy: flow IDs never recur.
+        self.policies = {}
 
-    def create(self, connection=None, profile=None, reserved=False):
+    def create(self, connection=None, profile=None, reserved=False, credential_id=None):
         if len(self.sessions) >= self.MAX_ACTIVE - (0 if reserved else self.reserved_slots):
             return None
         connection = connection or self.organization.choose_connection()
         session = Session(connection, self.now, self.rng.randint(49152, 65535), profile)
-        self.sessions.append(session)
+        session.credential_id = credential_id
+        policy = next((action for action in self.policies.values() if action.matches(session)), None)
+        if policy:
+            session.stop(self.now, "denied", policy.identifier)
+            self.history.append(session)
+        else:
+            self.sessions.append(session)
         return session
+
+    def apply_response(self, action, on_completed=None):
+        """Called at the effective boundary after all bytes reach that instant."""
+        if action.scope != "session":
+            self.policies[(action.kind, action.scope, action.target, action.peer_id)] = action
+        affected = []
+        state = {"block": "blocked", "isolate": "isolated", "revoke": "revoked"}[action.kind]
+        for session in list(self.sessions):
+            if action.matches(session) and session.stop(self.now, state, action.identifier):
+                self.sessions.remove(session)
+                self.history.append(session)
+                affected.append(session.identifier)
+                if on_completed:
+                    on_completed(session)
+        return tuple(affected)
 
     def advance(self, dt, on_created=None, on_completed=None, on_sample=None,
                 next_boundary=None, on_boundary=None):
