@@ -89,6 +89,23 @@ class CollectorTests(unittest.TestCase):
         model.sample_payload({"COL-ATH": 6030000})
         self.assertEqual(health.observed_payload_rate, 16.08)  # No invented payload catchup.
 
+    def test_fractional_recovery_keeps_partially_blind_payload_bucket_missing(self):
+        model, delivered, _ = self.simulation()
+        model.advance_to(0.1)
+        health = model.set_mode("COL-ATH", "outage", 0.1)
+        model.submit("COL-ATH", 0.1, "test", "DNS started")
+        model.advance_to(0.3)
+        model.submit("COL-ATH", 0.3, "test", "DNS completed")
+        model.set_mode("COL-ATH", "recovering", 0.8)
+        model.advance_to(1)
+        model.sample_payload({"COL-ATH": 292})
+        self.assertEqual(delivered, [])
+        self.assertIsNone(health.observed_payload_rate)
+        self.assertAlmostEqual(health.cpu, 18.3)  # Backlog work only; no invented payload work.
+        model.advance_to(2)
+        model.sample_payload({"COL-ATH": 584})
+        self.assertEqual(health.observed_payload_rate, 0.002336)
+
 
 class CollectorDashboardTests(unittest.TestCase):
     def app(self, speed=1):

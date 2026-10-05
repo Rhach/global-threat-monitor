@@ -37,6 +37,7 @@ class CollectorHealth:
         self.seen = deque(maxlen=256)
         self.seen_ids = set()
         self.last_payload_bytes = 0
+        self.payload_gap = False
         self.observed_payload_rate = 0.0
         self.cpu = 18.0
 
@@ -154,8 +155,11 @@ class CollectorSimulation:
         self._process_to(now)
 
     def _process_to(self, now):
+        elapsed = now - self.now
         self.now = now
         for collector in self.collectors.values():
+            if elapsed > 0 and collector.mode == "outage":
+                collector.payload_gap = True
             collector.now = now
             while collector.samples and collector.samples[0][0] <= now - collector.WINDOW:
                 collector.samples.popleft()
@@ -185,7 +189,9 @@ class CollectorSimulation:
             total = totals.get(identifier, 0)
             delta = total - collector.last_payload_bytes
             collector.last_payload_bytes = total
-            collector.observed_payload_rate = None if collector.mode == "outage" else delta * 8 / 1000000
+            # A partially blind bucket cannot be reconstructed by recovery.
+            collector.observed_payload_rate = None if collector.payload_gap or collector.mode == "outage" else delta * 8 / 1000000
+            collector.payload_gap = False
             processing = sum(1 for timestamp, _ in collector.samples if timestamp > self.now - 1)
             collector.cpu = min(95.0, 18 + (collector.observed_payload_rate or 0) * 0.09 +
                                 processing * 0.6 + len(collector.queue) * 0.15)
