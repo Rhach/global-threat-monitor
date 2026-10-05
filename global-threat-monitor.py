@@ -17,7 +17,7 @@ from terminal_map import (
     MapViewport, border_texture, coastline_texture, load_borders, load_coastlines, project,
 )
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
-from critical_flow import CriticalIncident
+from critical_flow import IncidentSimulation
 from simulation_model import Organization, SessionSimulation, valid_advance
 
 APP_NAME = "Global Threat Monitor"
@@ -489,9 +489,8 @@ class CyberMonitor:
         self.last_auto_zoom = self.boot_time
         self.clock_base = time.time()
         self.attacks = []
-        self.critical_incident = None
-        self.critical_cooldown = random.uniform(30.0, 90.0)
-        self.incident_count = 0
+        self.incidents = IncidentSimulation(self.simulation, self.incident_route,
+                                             self.log_observation, seed=seed)
         self.threat_logs = deque(maxlen=80)
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
@@ -580,6 +579,33 @@ class CyberMonitor:
         return time.strftime("%H:%M:%S", time.gmtime(self.clock_base + self.simulation.now))
 
     @property
+    def critical_incident(self):
+        return self.incidents.active
+
+    @property
+    def incident_count(self):
+        return self.incidents.count
+
+    @property
+    def critical_cooldown(self):
+        return self.incidents.next_start - self.simulation.now
+
+    @critical_cooldown.setter
+    def critical_cooldown(self, value):
+        self.incidents.next_start = self.simulation.now + max(0.0, value)
+
+    def incident_route(self, connection, session):
+        route = AttackVector(self.organization.city_for(connection.source_id),
+                             self.organization.city_for(connection.peer_id),
+                             self.palette, connection, session)
+        if session is not None:
+            self.attacks.append(route)
+        return route
+
+    def log_observation(self, observation):
+        self.log(observation.summary(), "warn", "CRIT", "ATH")
+
+    @property
     def attack_cooldown(self):
         return self.simulation.next_spawn - self.simulation.now
 
@@ -638,14 +664,15 @@ class CyberMonitor:
 
     def complete_session(self, session):
         route = next((r for r in self.attacks if r.session is session), None)
-        if route is not None and route.critical:
-            return  # Legacy incident marker remains until its scripted cleanup.
+        if session.incident_id is not None:
+            self.incidents.completed_session(session)
         if route is not None:
             route.update(0)
             self.attacks.remove(route)
         collector = self.organization.collectors[session.connection.collector_id]
         assessment = " / assessment pending" if not session.connection.expected else ""
-        self.log(f"{self.organization.context(session.connection)} / {session.summary()}{assessment}",
+        incident = f" / incident {session.incident_id}" if session.incident_id else ""
+        self.log(f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}",
                  "info", "INFO", collector.city[3])
 
     def sample_telemetry(self):
@@ -658,59 +685,20 @@ class CyberMonitor:
         self._sample_events = self.total_events
 
     def start_critical_incident(self):
-        if self.critical_incident is not None:
-            return
-        # Keep the legacy incident lifecycle until the correlated scenario slice;
-        # its endpoints already refer to the same catalog as ordinary traffic.
-        connection = self.organization.connect("ATH-WS1", "EXT-DXB", "HTTPS")
-        session = self.simulation.create(connection)
-        if session is None:
-            return
-        route = AttackVector(self.organization.city_for(connection.source_id),
-                             self.organization.city_for(connection.peer_id),
-                             self.palette, connection, session)
-        self.attacks.append(route)
-        self.incident_count += 1
-        self.critical_incident = CriticalIncident(route, self.incident_count)
-        self.critical_cooldown = random.uniform(30.0, 90.0)
-        self.last_auto_zoom = time.monotonic()
-        self.log_connection(connection)
-        self.log(f"{self.organization.context(connection)} / "
-                 f"{self.critical_incident.identifier} / Data exfiltration detected / "
-                 f"{route.src_city[3]} > {route.dst_city[3]}", "warn", "CRIT", route.dst_city[3])
-        audio.play_success()
+        existing = self.critical_incident
+        incident = self.incidents.start()
+        if incident is None:
+            self.log("Scenario deferred / all session slots occupied", "warn", "MED")
+        elif existing is None:
+            self.last_auto_zoom = time.monotonic()
+        return incident
 
     def update_critical_incident(self, dt):
-        if self.paused or self.active_mode != "dashboard":
-            return
-        self.critical_cooldown -= max(0.0, dt)
-        incident = self.critical_incident
-        if incident is None:
-            if self.critical_cooldown <= 0:
-                self.start_critical_incident()
-            return
-        for stage in incident.update(dt):
-            messages = {
-                "TRACING FLOW": "Payload signature confirmed; tracing exfiltration route",
-                "QUARANTINING": "Destination isolated; revoking session credentials",
-                "CONTAINED": "Exfiltration contained; egress blocked and session revoked",
-            }
-            self.log(f"{self.organization.context(incident.route.connection)} / "
-                     f"{incident.identifier} / {messages[stage]}",
-                     "success" if stage == "CONTAINED" else "warn",
-                     "LOW" if stage == "CONTAINED" else "CRIT", incident.route.dst_city[3])
-            if stage == "CONTAINED":
-                self.blocked += 1
-                self.rule_hits[3] += 1
-                audio.play_success()
-        if incident.complete:
-            self.attacks[:] = [route for route in self.attacks if route is not incident.route]
-            self.critical_incident = None
-            self.last_auto_zoom = time.monotonic()
+        """Compatibility entrypoint: all simulation work advances together."""
+        self.update(dt)
 
     def update(self, dt=1 / 30):
         dt = valid_advance(dt)
-        self.update_critical_incident(dt)
         self.update_map()
         if self.paused:
             return
@@ -721,12 +709,10 @@ class CyberMonitor:
                 self.log("Exercise timed out; recovery policy applied", "warn", "HIGH")
         sim_dt = dt * self.speed_multiplier
         self.simulation.advance(sim_dt, self.add_session_route,
-                                self.complete_session, self.sample_telemetry)
+                                self.complete_session, self.sample_telemetry,
+                                self.incidents.next_boundary, self.incidents.process_boundary)
         self.elapsed = self.simulation.now
         for attack in self.attacks:
-            if attack.critical:
-                attack.rate = attack.session.rate
-                continue
             attack.update(0)
 
     def panel(self, x, y, w, h, title):
@@ -747,7 +733,7 @@ class CyberMonitor:
         if self.critical_incident is not None:
             incident = self.critical_incident
             cards[0] = ("PRIORITY INCIDENT", "CONTAINED" if incident.contained else "CRITICAL P1",
-                        f"{incident.identifier} / EXFILTRATION", "success" if incident.contained else "warn")
+                        f"{incident.identifier} / SUSPECTED EXFIL", "success" if incident.contained else "warn")
         for i, (title, value, hint, color) in enumerate(cards):
             x = i * (width + 1) // 4
             end = (i + 1) * (width + 1) // 4 - 1
@@ -764,7 +750,8 @@ class CyberMonitor:
         if incident:
             route = incident.route
             self.text(px, py, pw, f"{incident.stage} / {route.src_city[3]} > {route.dst_city[3]} / "
-                      f"{round(route.progress * 100):02d}%", "success" if incident.contained else "warn")
+                      f"{route.connection.identifier} / {incident.identifier}",
+                      "success" if incident.contained else "warn")
         else:
             unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
             summary = f"{len(visible_routes):02d} flows / {flagged:02d} review"
@@ -818,9 +805,9 @@ class CyberMonitor:
             fy = round((1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t * t * dy)
             if 0 <= fx < pw and 0 <= fy < mh:
                 self.canvas.write_char(px + fx, my + fy, "●", self.palette["warn" if route.flagged else "packet"])
-        # A persistent geographic trail stays attached to the tracked packet
-        # while the camera moves. It remains above ordinary traffic and borders.
-        if incident:
+        # The incident's aggregate activity trail uses the original geographic
+        # arc and remains above ordinary traffic and borders when measured active.
+        if incident and incident.route.session is not None and incident.route.rate > 0:
             steps = 180
             for step in range(steps + 1):
                 t = step / steps
@@ -871,7 +858,7 @@ class CyberMonitor:
                     self.text(px + lx, my + ly, 3, city[3], "text")
                     occupied.update(cells)
                     break
-        if incident:
+        if incident and incident.route.session is not None and incident.route.rate > 0:
             fx, fy = project(*incident.position(), pw, mh, bounds)
             fx, fy = round(fx), round(fy)
             color = "success" if incident.contained else "critical_head"
@@ -936,7 +923,7 @@ class CyberMonitor:
         for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
                 break
-            policy = ("BLOCKED" if self.critical_incident.contained else "TRACE") if route.critical else (
+            policy = self.critical_incident.identifier if route.critical else (
                 "REVIEW" if route.flagged else "ALLOW")
             if route.connection is None:
                 context = f"{route.src_city[3]}>{route.dst_city[3]}"
@@ -1011,6 +998,10 @@ class CyberMonitor:
                 "flows           Session identity, ports, state, bytes, packets and 1s rates",
                 "sessions        Start DNS, HTTPS, SSH and backup demonstration",
                 "flow-history    Completed session summaries (last 120)",
+                "scenario        Trigger correlated exfiltration scenario (same as F)",
+                "incident        Active or most recent incident facts and session IDs",
+                "timeline [N]    Retained observations; N selects one at small sizes",
+                "incidents       Retained unresolved summaries (last 64)",
                 "org             List sites, assets, expected peers and collectors",
                 "baseline        Athens workstation > expected Frankfurt service",
                 "unfamiliar      Athens workstation > peer with unknown geography",
@@ -1030,13 +1021,45 @@ class CyberMonitor:
                 f"Latency: {self.metrics['LATENCY']:.1f} ms / modeled load estimate",
                 f"Processed: {self.total_events:,}; contained: {self.blocked:,}",
             ])
+        elif command == "scenario":
+            incident = self.start_critical_incident()
+            self.shell_history.append(incident.summary() if incident else "Scenario deferred: session limit")
+        elif command in ("incident", "timeline", "incidents") or command.startswith("timeline "):
+            incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
+            if command == "incidents":
+                self.shell_history.extend(item.summary() for item in self.incidents.history)
+                if self.critical_incident:
+                    self.shell_history.append(self.critical_incident.summary())
+            elif incident is None:
+                self.shell_history.append("No incident observations yet")
+            elif command.startswith("timeline"):
+                observations = list(incident.timeline)
+                if command != "timeline":
+                    try:
+                        index = int(command.split()[1])
+                        if not 1 <= index <= len(observations):
+                            raise ValueError
+                        observations = [observations[index - 1]]
+                    except (ValueError, IndexError):
+                        self.shell_history.append(f"Use timeline N, with N from 1 to {len(observations)}")
+                        return
+                for observation in observations:
+                    self.shell_history.extend(observation.detail_lines())
+            else:
+                self.shell_history.extend(incident.detail_lines())
+                self.shell_history.append("Timeline timestamps are elapsed simulation seconds")
+                for session in incident.sessions:
+                    self.shell_history.extend(session.detail_lines())
         elif command == "flows":
             for route in self.attacks:
                 self.shell_history.append(self.organization.describe(route.connection))
+                if route.session.incident_id:
+                    self.shell_history.append(f"Incident {route.session.incident_id} / {self.critical_incident.stage}")
                 self.shell_history.extend(route.session.detail_lines())
         elif command == "flow-history":
             for session in self.simulation.history:
-                self.shell_history.append(self.organization.context(session.connection))
+                self.shell_history.append(self.organization.context(session.connection) +
+                                          (f" / incident {session.incident_id}" if session.incident_id else ""))
                 self.shell_history.extend(session.detail_lines())
             if not self.simulation.history:
                 self.shell_history.append("No completed sessions yet")

@@ -90,14 +90,14 @@ H J K L   Pan map left / down / up / right
 P         Pause / resume
 S         Toggle sound
 A         Add a simulated traffic flow
-F         Trigger a critical incident immediately
+F         Trigger the correlated exfiltration scenario immediately
 C         Open simulation console. Esc returns to the dashboard
 G         Start a containment drill. Press keys to complete; Esc cancels
 + / =     Increase speed
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario`, `incident`, `timeline [N]`, `incidents`, `clear`, or `exit`. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -130,9 +130,9 @@ All 128 existing cities remain separate observation collectors (`COL-ATH`,
 is not an organization asset. In particular, a roaming user's activity observed
 by `COL-FRA` does not assign Frankfurt coordinates to that user. The seed applies
 to session choices, source ports and background scheduling for the same inputs
-and simulation time, independent of rendering FPS. Legacy priority-incident
-pacing and its marker stages still use the earlier script; correlation and
-consequential response are follow-up slices.
+and simulation time, independent of rendering FPS. The correlated incident
+scheduler uses the same simulation clock; its evidence references these assets
+and their actual sessions.
 
 To reproduce the baseline demonstration without an interactive terminal:
 
@@ -150,8 +150,8 @@ Enter `baseline`, `unfamiliar`, and `flows` to compare the same Athens workstati
 and collector across its expected Frankfurt service and an unfamiliar peer.
 Press Esc to inspect both flow rows while paused; `R` changes the map region
 without changing asset identities. Enter `org` in the console for the catalog.
-The existing `F` incident animation now uses `ATH-WS1` and the catalog's known
-Dubai peer; its legacy scripted lifecycle is retained until the incident slice.
+The `F` scenario uses `ATH-WS1` and the catalog's known Dubai peer, `EXT-DXB`.
+The peer has known geography but is outside the workstation's expected peers.
 
 ## Sessions and reconciled traffic
 
@@ -177,7 +177,9 @@ Live connection state is `S0` before a DNS reply, otherwise `S1`; normal
 completion is `SF`. Completed sessions stop accumulating and have zero live
 rates. The last 120 completed summaries remain available through `flow-history`.
 The model permits 12 live sessions; manual generation reserves one slot for the
-legacy priority incident and background generation targets fewer than five.
+correlated scenario and background generation targets fewer than five. A
+scenario reserves one slot across its successive sessions; a trigger at full
+capacity is deferred without creating an incident or incrementing its count.
 
 Directional session rates measure byte growth over the trailing one simulation
 second, counting time before creation as zero. The throughput card and traffic
@@ -198,9 +200,9 @@ not represent physical packet transit, delivery progress or transfer throughput.
 An idle session keeps its row and endpoint labels while its activity marker
 disappears when the trailing rate reaches zero. Pause freezes session accounting
 and markers; speed scales their simulation time. FPS changes only rendering.
-The legacy `F` priority marker retains its scripted camera/lifecycle timing,
-while its session uses the same HTTPS accounting; its scripted containment will
-be replaced by correlated incident and response modeling in later slices.
+The `F` scenario uses the same markers and session accounting. During
+authentication and idle gaps, incident endpoints stay highlighted while the
+activity head and transfer trail disappear. Camera easing uses real time.
 
 Run the reproducible demonstration without a terminal or real-time waits:
 
@@ -223,7 +225,67 @@ backup's 20,000,000 originator bytes with its 16 Mb/s outgoing rate. Other live
 sessions contribute their displayed directional bytes to the aggregate. Resume
 past 30 simulation seconds, then inspect `flow-history` for the completed backup
 and `flows` for the persistent SSH session. Console time continues ordinary
-session progression unless paused; only the legacy priority script stops there.
+session and incident progression unless paused.
+
+## Correlated incident and retained evidence
+
+The first scenario follows `ATH-WS1` and `EXT-DXB` through these observations.
+Times below are simulation seconds relative to its start:
+
+| Time | Observation and actual session behavior |
+| --- | --- |
+| 0s | Five failed logins followed by success; the stated authentication baseline is 0–1 failures per login |
+| 2s | First scenario HTTPS session to `203.0.113.201`, outside the workstation's configured peer baseline |
+| 16s / 30s | Further HTTPS sessions to the same peer at 14s start intervals; each connection lasts 12s |
+| 44s | A fourth HTTPS session starts a 30s upload over TCP/443 with TLS encryption |
+| 49s | 10,000,000 originator bytes observed in 5s, compared with 3,600 originator bytes in an expected 12s HTTPS session |
+| 74s | Upload finishes naturally with 60,000,000 originator and 300,000 responder bytes; incident remains unresolved |
+
+This supports suspected exfiltration in the sense of data removal described by
+[MITRE ATT&CK TA0010](https://attack.mitre.org/tactics/TA0010/). The modeled
+recurrence is an observation; the simulation makes no command-and-control
+technique claim. TLS payload content is unavailable. No signature confirmation,
+automatic blocking or credential revocation is inferred from this evidence.
+The existing keyboard drill is a separate simulation exercise and does not
+resolve this incident. Consequential response is a later slice.
+
+Every observation has an immutable incident ID, evidence ID, timestamp, asset
+IDs, collector ID and (when applicable) session ID. The same session IDs appear
+in `flows` and `flow-history`; the priority row shows its incident ID. At the end,
+the banner clears and live flows disappear, while the last 64 incident summaries
+retain up to 32 observations and four scenario sessions each. Ordinary completed
+session history remains limited to 120; an incident's original evidence survives
+that session-history eviction. History is retained only for the running process.
+
+Console `incident` shows the active or latest incident and its sessions.
+`timeline` prints its original observations with elapsed simulation timestamps;
+`timeline N` selects one numbered observation so the full evidence is readable
+at 80×24 (for example, `timeline 1` for authentication or `timeline 9` for volume).
+`incidents` prints bounded retained summaries. An existing active incident makes
+additional `F` or `scenario` triggers idempotent.
+
+To reproduce all stages and reconcile the byte total without a terminal,
+real-time waits or network access:
+
+```bash
+python3 demo_incident.py
+python3 -m unittest -v test_critical_flow
+```
+
+The demo reconciles 62,470,800 payload bytes across the three ordinary HTTPS
+sessions and upload; it retains 11 observations and reports zero containments.
+Fixtures compare one 240s advance with 15/60 FPS partitions including scheduled
+scenarios and background sessions, and check pause, speed, capacity reservation,
+idle map markers, retained evidence, manual camera override and incremental
+rendering at multiple terminal sizes.
+
+For an interactive demonstration, start with `--seed 12 --speed 0.25`, press `P`
+and `F`, then `C` and enter `incident` or `timeline 1`. Resume with Esc and `P`.
+After 49 simulation seconds (196 real seconds at this speed), pause and inspect
+`flows`, `incident`, and `timeline 9` to trace `CT-001` to its upload session.
+Resume past 74 simulation seconds, then inspect `incident`, `timeline 11`,
+`incidents`, and `flow-history` for its unresolved retained outcome. Automatic
+scheduling starts the next scenario only after the current one finishes.
 
 ## Braille map
 
@@ -244,14 +306,14 @@ regions, resetting the map or toggling borders restarts the timer. This camera
 behavior uses real time and continues while the simulation is paused; it stops
 while the console or drill is open. Scroll or pan to stop the automatic zoom-out.
 
-Every 30–90 seconds of active dashboard time, a simulated priority incident
-triggers a red P1 banner and focuses the map on an exfiltration flow. The camera
-zooms in and follows the packet along a persistent trail, with a target reticle,
-priority flow row and timestamped acquisition, tracing and quarantine events.
-After containment, the banner turns green and the map resumes gradual zoom-out.
-Each sequence lasts about 21 seconds. Incident timing is independent of simulation
-speed and freezes while paused or while the console or drill is open.
-Press `F` to preview a critical incident immediately.
+A correlated scenario is scheduled after 30–90 simulation seconds, and again
+30–90 seconds after the preceding scenario finishes. Its P1 banner, priority
+flow row and map share the same incident and session state. The camera follows
+the aggregate activity marker on the original geographic arc while traffic is
+active. Pause freezes scenario evidence and session bytes; speed changes both,
+and FPS changes only rendering. Console and drill views continue the simulation
+unless paused; camera motion waits until the dashboard returns. Press `F` or enter
+`scenario` in the console to trigger the same scenario as the scheduler.
 
 Map controls immediately stop the automatic follow and leave the incident
 running with a manual camera. Idle zoom-out waits while the camera is tracking

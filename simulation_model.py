@@ -38,13 +38,21 @@ class Session:
         "BACKUP": ("tcp", 443, "TLS", 30.0, ((0, 30, 2000000, 10000),)),
     }
 
-    def __init__(self, connection, started_at=0.0, orig_port=49152):
+    def __init__(self, connection, started_at=0.0, orig_port=49152, profile=None):
         self.connection = connection
         self.identifier = connection.identifier
         self.service = connection.service
         if self.service not in self.PROFILES:
             raise ValueError("Unsupported simulated service: " + self.service)
         self.proto, self.resp_port, self.encryption, self.lifetime, self.segments = self.PROFILES[self.service]
+        self.profile = profile or "baseline"
+        self.incident_id = None
+        if profile is not None:
+            if profile != "outbound_bulk" or self.service != "HTTPS":
+                raise ValueError("Unsupported session profile: " + str(profile))
+            # HTTPS remains the application service; TLS is encryption only.
+            self.lifetime = 30.0
+            self.segments = ((0, 30, 2000000, 10000),)
         self.orig_port = orig_port
         self.started_at = started_at
         self.now = started_at
@@ -134,6 +142,7 @@ class SessionSimulation:
         self._advance_total = 0.0
         self._time_correction = 0.0
         self.sessions = []
+        self.reserved_slots = 0
         self.history = deque(maxlen=self.HISTORY_LIMIT)
         self.traffic_history = deque([0.0], maxlen=120)
         self.total_bytes = 0
@@ -143,15 +152,16 @@ class SessionSimulation:
         self.automatic = True
         self.throughput = 0.0
 
-    def create(self, connection=None):
-        if len(self.sessions) >= self.MAX_ACTIVE:
+    def create(self, connection=None, profile=None, reserved=False):
+        if len(self.sessions) >= self.MAX_ACTIVE - (0 if reserved else self.reserved_slots):
             return None
         connection = connection or self.organization.choose_connection()
-        session = Session(connection, self.now, self.rng.randint(49152, 65535))
+        session = Session(connection, self.now, self.rng.randint(49152, 65535), profile)
         self.sessions.append(session)
         return session
 
-    def advance(self, dt, on_created=None, on_completed=None, on_sample=None):
+    def advance(self, dt, on_created=None, on_completed=None, on_sample=None,
+                next_boundary=None, on_boundary=None):
         # Compensated summation avoids accumulating rounding at every frame.
         delta = valid_advance(dt) - self._time_correction
         advanced = self._advance_total + delta
@@ -166,6 +176,7 @@ class SessionSimulation:
             self.next_spawn = self.now  # Resuming background work never rewinds.
         while self.now < target:
             boundary = min(target, self.sample_time,
+                           next_boundary() if next_boundary else target,
                            self.next_spawn if self.automatic else target,
                            min((s.started_at + s.lifetime for s in self.sessions), default=target))
             self.now = boundary
@@ -178,6 +189,8 @@ class SessionSimulation:
                     self.history.append(session)
                     if on_completed:
                         on_completed(session)
+            if on_boundary:
+                on_boundary()
             if boundary + 1e-9 >= self.sample_time:
                 self.throughput = (self.total_bytes - self.last_sample_bytes) * 8 / 1000000
                 self.last_sample_bytes = self.total_bytes
