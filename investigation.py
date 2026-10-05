@@ -200,8 +200,11 @@ class Investigation:
     def flow_lines(self, app, session):
         connection = session.connection
         incident = self.find_incident(app, session.incident_id) if session.incident_id else None
-        actions = list(incident.actions) if incident else []
-        actions += [a for a in app.simulation.policies.values() if a not in actions]
+        retained = list(app.incidents.history) + ([app.critical_incident] if app.critical_incident else [])
+        causal = [a for record in retained for a in record.actions
+                  if a.identifier == session.response_action_id or session.identifier in a.affected_sessions]
+        current = list(app.simulation.policies.values())
+        actions = list({a.identifier: a for a in causal + (list(incident.actions) if incident else []) + current}.values())
         matching = [a for a in actions if a.matches(session) or session.identifier in a.affected_sessions]
         lines = [f"FLOW {session.identifier} / {'RETAINED FINAL SUMMARY' if session.complete else 'ACTIVE'}",
                  "Offline modeled session facts; originator out / responder in."]
@@ -219,7 +222,15 @@ class Investigation:
                   f"Credential={session.credential_id or 'none'}; policy stop={session.response_action_id or 'none'}",
                   f"Incident link: {session.incident_id or 'none'}" + (" (I opens incident)" if incident else ""),
                   "POLICY ACTIONS (modeled actuator lifecycle)"]
-        lines += [line for a in matching for line in a.detail_lines()] or ["No matching requested/applied policy actions."]
+        if session.response_action_id and not any(a.identifier == session.response_action_id for a in matching):
+            lines.append(f"Causal stop {session.response_action_id}: action details unavailable in bounded retention.")
+        for action in matching:
+            role = ("CAUSAL STOP" if action.identifier == session.response_action_id else
+                    "CURRENT PERSISTENT POLICY" if action in current else "RELATED INCIDENT ACTION")
+            lines.append(f"{role}: {action.identifier}")
+            lines.extend(action.detail_lines())
+        if not matching:
+            lines.append("No matching requested/applied policy actions.")
         lines += [f"{a.identifier} affected session links: {', '.join(a.affected_sessions) or 'none'}; "
                   f"incident coverage={'verified' if a.covers_incident else 'unverified'}" for a in matching]
         lines += self.coverage_lines(app, {connection.collector_id})

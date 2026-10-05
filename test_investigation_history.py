@@ -327,6 +327,26 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn("No received observations linked to this flow", text)
         self.assertEqual(app.investigation.current.selected_id, incident.sessions[-1].identifier)
 
+    def test_replaced_policy_keeps_the_retained_ordinary_flows_causal_stop(self):
+        app = self.app()
+        app.start_critical_incident()
+        app.update(49)
+        ordinary = app.trigger_attack(app.organization.connect("ATH-WS1", "FRA-APP", "HTTPS")).session
+        first = app.incidents.request_response("isolate", "endpoint", "ATH-WS1")
+        app.update(25)
+        self.assertEqual((ordinary.state, ordinary.response_action_id), ("isolated", first.identifier))
+        app.start_critical_incident()
+        second = app.incidents.request_response("isolate", "endpoint", "ATH-WS1")
+        app.update(2)
+        text = "\n".join(app.investigation.flow_lines(app, ordinary))
+        self.assertIn("CAUSAL STOP: " + first.identifier, text)
+        self.assertIn("applied=50.0", text)
+        self.assertIn("CURRENT PERSISTENT POLICY: " + second.identifier, text)
+        self.assertIn("applied=75.0", text)
+        self.assertEqual(ordinary.response_action_id, first.identifier)
+        self.assertIn(ordinary.identifier, first.affected_sessions)
+        self.assertNotIn(ordinary.identifier, second.affected_sessions)
+
     def test_event_to_flow_incident_other_related_flow_path_is_fully_navigable(self):
         app = self.app()
         incident = app.start_critical_incident()
