@@ -27,16 +27,21 @@ class Observation:
     disposition: str = "pending"
     response_status: str = "none"
     assessment_update: bool = False
+    received_at: float = None
 
     def summary(self):
         session = " / " + self.session_id if self.session_id else ""
-        return (f"t={self.timestamp:.2f} {self.identifier} {self.incident_id} "
+        receipt = (f" received={self.received_at:.2f} lag={max(0, self.received_at - self.timestamp):.2f}s"
+                   if self.received_at is not None else " receipt=pending")
+        return (f"t={self.timestamp:.2f}{receipt} {self.identifier} {self.incident_id} "
                 f"{self.source_id}>{self.peer_id}{session} / {self.stage}: {self.message} / "
                 f"severity={self.severity} confidence={self.confidence} "
                 f"assessment={self.assessment} disposition={self.disposition} response={self.response_status}")
 
     def detail_lines(self):
-        return (f"t={self.timestamp:.2f} {self.identifier} {self.incident_id} / {self.stage}",
+        receipt = (f"received={self.received_at:.2f} lag={max(0, self.received_at - self.timestamp):.2f}s"
+                   if self.received_at is not None else "receipt=pending")
+        return (f"t={self.timestamp:.2f} {self.identifier} {self.incident_id} / {self.stage}", receipt,
                 f"  {self.source_id}>{self.peer_id} / {self.collector_id} / {self.session_id or 'no session'}") + tuple(
                         textwrap.wrap(f"severity={self.severity} confidence={self.confidence} "
                                       f"assessment={self.assessment} disposition={self.disposition} "
@@ -64,6 +69,11 @@ class CriticalIncident:
         self.confidence_reason = "authentication failures exceed the configured baseline; intent unconfirmed"
         self.confidence_reasons = deque([self.confidence_reason], maxlen=8)
         self.assessment = "suspected credential misuse"
+        self.visible_stage = "EVIDENCE PENDING"
+        self._assessment_time = (-math.inf, -1)
+        self._visible_stage_time = (-math.inf, -1)
+        self.delivered_ids = deque(maxlen=128)
+        self._delivered_ids = set()
         self.dismissal_reason = ""
         self.partial_observed = False
         if variant == "benign":
@@ -113,6 +123,8 @@ class CriticalIncident:
     @property
     def residual_risk(self):
         active = [s for s in self.sessions if not s.complete]
+        if self.confidence == "unobserved":
+            return "no delivered evidence; modeled activity is not an available incident assessment"
         if self.assessment == "authorized transfer":
             return "authorized legitimate transfer" + (" continues" if active else " completed")
         if self.contained:
@@ -142,7 +154,7 @@ class CriticalIncident:
     def summary(self):
         orig = sum(s.orig_bytes for s in self.sessions)
         resp = sum(s.resp_bytes for s in self.sessions)
-        return (f"{self.identifier} {self.stage} / variant={self.variant} severity={self.severity} "
+        return (f"{self.identifier} {self.visible_stage} / variant={self.variant} severity={self.severity} "
                 f"confidence={self.confidence} assessment={self.assessment} disposition={self.disposition} / "
                 f"{self.source_id}>{self.peer_id} / sessions={len(self.sessions)} / "
                 f"orig/resp_bytes={orig}/{resp} / {self.response_status}")
@@ -239,7 +251,7 @@ class IncidentSimulation:
     VARIANTS = ("exfiltration", "benign", "delayed", "partial")
 
     def __init__(self, simulation, make_route, emit, seed=None,
-                 on_completed=None, on_applied=None):
+                 on_completed=None, on_applied=None, submit_observation=None):
         self.simulation = simulation
         self.make_route = make_route
         self.emit = emit
@@ -253,6 +265,8 @@ class IncidentSimulation:
         self.on_completed = on_completed
         self.on_applied = on_applied
         self._next_assessment = None
+        self.submit_observation = submit_observation
+        self.delivery_errors = deque(maxlen=64)
 
     def next_boundary(self):
         if self.active:
@@ -262,13 +276,17 @@ class IncidentSimulation:
 
     def observe(self, stage, message, session=None, action=None, result=""):
         incident = self.active
+        if session is None and action and action.scope == "session":
+            session = next((candidate for candidate in incident.sessions
+                            if candidate.identifier == action.target), None)
         incident.observation_count += 1
         source_id = (session.connection.source_id if session else action.target
                      if action and action.scope in ("endpoint", "peer") else
                      self.simulation.organization.credentials[action.target]
                      if action and action.scope == "credential" else incident.source_id)
         peer_id = (action.peer_id if action.scope == "peer" else
-                   incident.peer_id if action.scope == "session" else "") if action else (
+                   (session.connection.peer_id if session else incident.peer_id)
+                   if action.scope == "session" else "") if action else (
                        session.connection.peer_id if session else incident.peer_id)
         collector_id = self.simulation.organization.assets[source_id].collector_id
         assessment_update = self._next_assessment is not None
@@ -282,7 +300,15 @@ class IncidentSimulation:
                                   action.identifier if action else "", result, incident.severity,
                                   confidence, reason, assessment,
                                   incident.disposition, incident.response_phase, assessment_update)
-        self.deliver_observation(observation)
+        if self.submit_observation:
+            self.submit_observation(observation)
+        else:
+            self.deliver_observation(observation)
+
+    def find_incident(self, identifier):
+        if self.active and self.active.identifier == identifier:
+            return self.active
+        return next((incident for incident in self.history if incident.identifier == identifier), None)
 
     def deliver_observation(self, observation):
         """Evidence receipt hook: visible confidence changes only on delivery.
@@ -290,16 +316,38 @@ class IncidentSimulation:
         Collectors can later defer this call without revealing a stage's proposed
         assessment. Occurrence IDs/times are assigned before delivery.
         """
-        incident = self.active
+        incident = self.find_incident(observation.incident_id)
+        if incident is None:
+            self.delivery_errors.append(f"Unknown/evicted incident {observation.incident_id}; "
+                                        f"unattached evidence {observation.identifier}")
+            return False
+        if observation.identifier in incident._delivered_ids:
+            return False
+        if len(incident.delivered_ids) == incident.delivered_ids.maxlen:
+            incident._delivered_ids.remove(incident.delivered_ids.popleft())
+        incident.delivered_ids.append(observation.identifier)
+        incident._delivered_ids.add(observation.identifier)
+        order = (observation.timestamp, int(observation.identifier.rsplit("-", 1)[1]))
         # Neutral phase/completion snapshots must not roll an assessment back
         # when older observations are eventually delivered after newer evidence.
-        if observation.assessment_update:
+        if observation.assessment_update and order >= incident._assessment_time:
+            incident._assessment_time = order
             incident.confidence, incident.assessment = observation.confidence, observation.assessment
             incident.confidence_reason = observation.confidence_reason
             if observation.confidence_reason not in incident.confidence_reasons:
                 incident.confidence_reasons.append(observation.confidence_reason)
-        incident.timeline.append(observation)
+        if (observation.stage not in ("SESSION FINISHED", "RESPONSE REQUESTED", "RESPONSE APPLIED",
+                                     "RESPONSE CANCELLED", "OPERATOR DISMISSED", "RESPONSE VERIFIED") or
+                observation.stage == "RESPONSE VERIFIED" and observation.disposition == "contained") and order >= incident._visible_stage_time:
+            incident._visible_stage_time = order
+            incident.visible_stage = ("CONTAINMENT VERIFIED" if observation.stage == "RESPONSE VERIFIED"
+                                      else observation.stage)
+        ordered = sorted(list(incident.timeline) + [observation], key=lambda item: (
+            item.timestamp, int(item.identifier.rsplit("-", 1)[1])))
+        incident.timeline.clear()
+        incident.timeline.extend(ordered)
         self.emit(observation)
+        return True
 
     def assess(self, confidence, assessment, reason):
         self._next_assessment = (confidence, assessment, reason)
@@ -459,6 +507,12 @@ class IncidentSimulation:
         connection = self.simulation.organization.connect(source, peer, service)
         route = self.make_route(connection, None)
         self.active = CriticalIncident(route, self.count, self.simulation.now, variant)
+        initial_confidence, initial_assessment, initial_reason = (
+            self.active.confidence, self.active.assessment, self.active.confidence_reason)
+        self.active.confidence, self.active.assessment = "unobserved", "awaiting evidence"
+        self.active.confidence_reason = "no collector evidence delivered"
+        self.active.confidence_reasons.clear()
+        self.assess(initial_confidence, initial_assessment, initial_reason)
         revoked = next((a for a in self.simulation.policies.values()
                         if a.scope == "credential" and a.target == self.active.credential_id), None)
         if variant == "benign":

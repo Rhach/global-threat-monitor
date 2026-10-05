@@ -13,7 +13,8 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - MapSCII-style detailed Braille coastlines, with zoom and pan
 - Country borders and 128 city sensors across the Americas, Europe, Africa, Asia and Oceania
 - World, Europe, Asia, and Americas views, selected with `R`
-- Simulated CPU, memory, temperature, and latency estimates tied to modeled payload throughput
+- Collector heartbeats, coverage gaps, bounded buffering, ingestion lag and loss
+- CPU/RAM estimates derived from observed payload, processing work and queue occupancy
 - Traffic history, detection counts, and an active-flow table
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
@@ -97,7 +98,7 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -190,9 +191,11 @@ Consequently a newly completed DNS exchange appears in that bucket although
 its current live rate is zero; a partial next bucket leaves the card unchanged.
 The last 120 buckets are retained. `status` reports lifetime payload bytes so
 the bucket integral can be reconciled before history eviction. Event totals and
-events/sec count actual emitted observations; CPU, temperature and latency are
-explicit load estimates, with RAM/disk fixed baseline estimates. Detection and
-containment counts begin at zero.
+events/sec count received observations and local control/loss messages. Collector
+CPU/RAM estimates follow observed payload, processing work and queue pressure;
+ingestion p95 and event loss use defined 60s measurement windows below. Missing
+collector data is explicit. Temperature, fan and packet-loss placeholders have
+been removed. Detection and containment counts begin at zero.
 
 Moving map heads represent aggregate activity on an established session, using
 a repeating three-second marker cycle. Their location and animation speed do
@@ -379,8 +382,8 @@ labels express evidence support for the hypothesis, not numerical likelihood.
 Encrypted content remains unknown, including after successful containment.
 Confidence changes are proposed by observations and applied through a dedicated
 evidence-delivery hook; neutral response/completion snapshots do not change
-the assessment. This slice delivers evidence immediately; collector buffering
-is a later slice. Stopping a benign transfer does not suppress its later approval
+the assessment. Healthy collectors deliver immediately; outages and delay modes
+defer evidence as described below. Stopping a benign transfer does not suppress its later approval
 evidence, so legitimate service disruption can still be recognized.
 
 Select a variant using the same simulation/session/response lifecycle:
@@ -438,6 +441,104 @@ also check incorrect dismissal, late responses, atomic two-slot reservation,
 observation delivery, minimum-size dashboard facts, and large advances against
 15/60 FPS partitions.
 
+## Collector coverage and ingestion
+
+The 128 city collectors have separate mutable heartbeat/delivery state; asset
+traffic continues on the same simulation clock when a collector loses delivery.
+The coverage card counts **healthy collectors**, with degraded coverage shown
+explicitly. Map nodes use `~` for delayed, `!` for stale, `x` for offline, and `r`
+for recovering. Healthy nodes keep the existing city/flag symbols. Degraded cities
+receive label priority even without active traffic. During a gap, dashboard and
+console flow facts are labeled **modeled**, and the incident banner uses the last
+delivered evidence stage. A blind incident starts with `unobserved` confidence
+and `awaiting evidence`; no fresh alert, volume observation or confidence increase
+appears in its feed/timeline before receipt.
+
+| Console command | Effect on simulation time |
+| --- | --- |
+| `collectors COL-ATH` | Show state, last heartbeat/age, oldest queued-event lag, queue depth, lifetime drops/received records, observed payload and CPU estimate |
+| `outage COL-ATH` | Interrupt delivery/heartbeats immediately; state is delayed, stale when heartbeat age reaches 6s, then offline at 10s |
+| `delay COL-ATH 3` | Keep 2s heartbeats but hold each observation at least 3s; drain eligible records at two/s; delay range is greater than zero through 60s |
+| `recover COL-ATH` | Restore heartbeat now; queued catchup begins 0.5s later, at two records/s, then returns to healthy when empty |
+
+The normal heartbeat interval is two simulation seconds. Outage thresholds use
+age since the **last received heartbeat**, which may predate the outage command.
+Stopping delivery immediately makes coverage degraded even while that heartbeat
+is recent. `collectors` without an ID lists the catalog; IDs and invalid delay
+values are checked before any mode change. Pause freezes heartbeats, evidence,
+queues and catchup; speed scales them; FPS changes only rendering.
+
+Each collector has a FIFO queue of at most **32 observations** (4,096 across the
+catalog). This upstream simulation buffer stores incident evidence and ordinary
+session start/completion/denial telemetry. On overflow, the new record is dropped
+and a local loss notice reports its stable ID and occurrence time; original queued
+records remain intact. Lifetime drops never reset on recovery. Catchup processes
+oldest queued records at exact half-second boundaries; new observations join
+behind them. Repeated event IDs are ignored using bounded recent-ID and queued-ID
+checks. Delivered evidence never reapplies response actions or increments policy
+counters again.
+
+The feed's UTC column is **receipt time**. Every telemetry record also includes
+elapsed simulation occurrence/receipt times and lag. Incident timelines sort by
+occurrence time, then observation ID, and expose receipt separately. Late evidence
+updates its original active or retained incident, even while another incident is
+active. Unknown/evicted incident destinations produce an explicit unattached-
+evidence message. Assessment changes apply only when their occurrence order is
+at least as new as the last applied assessment; older buffered evidence and neutral
+snapshots cannot reverse newer confidence. Response application/physical cessation
+remain exact during an outage, while their collector proof can arrive later.
+`actions` identifies those actuator-model results during a coverage gap.
+
+Ingestion p95 is the nearest-rank 95th percentile of receipt-minus-occurrence lag
+for records **received within the last 60 simulation seconds**, capped at the
+latest 256 samples per collector. The sorted percentile is cached until samples
+change. `n/a` means no samples; healthy immediate delivery measures zero. It is
+an event delay, not network RTT or packet transit. Event loss is dropped/submitted
+observations in a trailing 60s window of one-second count buckets. The model does
+not claim a packet-loss measurement. Lifetime drop totals remain available when
+the measurement window expires.
+
+Per-collector observed payload uses the previous completed one-second byte bucket;
+it is missing during delivery outage. Recovery does not turn unseen past payload
+into a current traffic burst. The global throughput card remains actual **modeled**
+session bytes, including activity behind a coverage gap. CPU is an estimate with
+18% idle baseline, plus 0.09 percentage points per observed Mb/s, 0.6 per processed
+record in the last second, and 0.15 per queued record, capped at 95%. The dashboard
+shows the busiest estimate. RAM is a 62% baseline plus up to 20 points for catalog
+queue occupancy. Buffer footprint estimates 2KiB per queued record; this is in
+memory. These estimates describe the simulator's processing work, not measured
+hardware sensors, temperature or disk usage.
+
+Queues, feed, timelines and receipt-ID sets are bounded. Collector count buckets
+retain at most 61 rows and lag samples at most 256; recent event-ID checks retain
+256 IDs per collector plus queued IDs. Incident receipt dedup retains 128 IDs per
+retained incident. Incident/session retention limits remain 64/120. Loss and
+missing coverage stay explicit rather than implying that a quiet site is safe.
+
+Reproduce the outage, original-incident catchup and overflow without sleeps or
+network access:
+
+```bash
+python3 demo_collectors.py
+python3 -m unittest -v test_collectors
+```
+
+The demo takes Athens offline before a scenario, shows stale at 6s and offline at
+10s while traffic continues, archives it at 74s with no received evidence, then
+recovers while another incident is active. Original observations arrive with
+original times and the correct incident ID. Three actual unchecked scenarios
+also fill the 32-record buffer and explicitly drop 13 records; recovery delivers
+32 in 16s. Fixtures cover thresholds, exact catchup, overflow/dedup, cross-collector
+assessment order, late archived/orphan delivery, load, pause/speed and 15/60 FPS.
+
+For interactive use, start with `--seed 12`, pause with `P`, open `C`, enter
+`outage COL-ATH` then `scenario`, return with Esc and resume. Inspect the coverage
+card and map gap. After the upload starts, pause and enter `collectors COL-ATH`,
+`flows`, and `incident`; modeled bytes have grown while evidence is unavailable.
+Enter `recover COL-ATH`, resume, and use `timeline N` to compare original occurrence
+and delayed receipt. The operator can independently respond during the gap using
+the same explicit scopes, with collector verification evidence received later.
+
 ## Braille map
 
 The dashboard always uses detailed Braille coastlines inspired by
@@ -478,7 +579,7 @@ or destination of an active trace and disappears when that trace completes.
 Labels avoid each other and city markers; when multiple cities share a terminal
 cell, active or flagged sensors take priority.
 
-The map runs offline with the Python standard library. Keep `terminal_map.py`, `terminal_input.py`, `critical_flow.py`, `simulation_model.py`,
+The map runs offline with the Python standard library. Keep `terminal_map.py`, `terminal_input.py`, `critical_flow.py`, `simulation_model.py`, `collector_model.py`,
 `world_coastlines.json` and `world_borders.json` alongside the main script. Missing
 or invalid coastline data records an event; sensors, routes and available borders
 continue to render.
@@ -526,7 +627,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions test_incident_assessment
+python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions test_incident_assessment test_collectors
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.

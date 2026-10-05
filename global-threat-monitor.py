@@ -12,12 +12,15 @@ import shutil
 import sys
 import threading
 import time
+import textwrap
+from dataclasses import replace
 
 from terminal_map import (
     MapViewport, border_texture, coastline_texture, load_borders, load_coastlines, project,
 )
 from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInput
 from critical_flow import IncidentSimulation
+from collector_model import CollectorSimulation
 from simulation_model import Organization, SessionSimulation, valid_advance
 
 APP_NAME = "Global Threat Monitor"
@@ -489,26 +492,28 @@ class CyberMonitor:
         self.last_auto_zoom = self.boot_time
         self.clock_base = time.time()
         self.attacks = []
+        self.collectors = CollectorSimulation(self.organization.collectors, self.deliver_telemetry,
+                                              self.telemetry_loss)
         self.incidents = IncidentSimulation(self.simulation, self.incident_route,
                                              self.log_observation, seed=seed,
                                              on_completed=self.complete_session,
-                                             on_applied=self.response_applied)
+                                             on_applied=self.response_applied,
+                                             submit_observation=self.submit_observation)
         self.threat_logs = deque(maxlen=80)
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
         self.breach_time_left = 10.0
         self.breach_taps = 0
-        self.metrics = {"CPU": 18.0, "RAM": 62.0, "DISK": 41.0,
-                        "TEMP": 44.4, "NET": 0.0, "LATENCY": 15.0}
+        self.metrics = {"CPU": 18.0, "RAM": 62.0, "BUFFER_KIB": 0.0,
+                        "NET": 0.0, "LATENCY": 0.0}
         self.traffic_history = self.simulation.traffic_history
-        self.latency_history = deque([15.0], maxlen=120)
+        self.latency_history = deque([0.0], maxlen=120)
         self.total_events = 0
         self._sample_events = 0
         self.blocked = 0
         self.response_counts = {"block": 0, "isolate": 0, "revoke": 0}
         self.rule_hits = [0, 0, 0, 0]
         self.last_eps = 0
-        self.sensors_online = len(self.organization.collectors)
         audio.muted = not initial_sound
         self.log("Offline simulation ready / session payload traffic; no background aggregate")
         self.borders_visible = False
@@ -612,7 +617,54 @@ class CyberMonitor:
 
     def log_observation(self, observation):
         sensor = self.organization.collectors[observation.collector_id].city[3]
-        self.log(observation.summary(), "warn", "CRIT", sensor)
+        self.log(observation.summary(), "warn", "CRIT", sensor, observation.received_at)
+
+    @property
+    def sensors_online(self):
+        return sum(c.state == "healthy" for c in self.collectors.collectors.values())
+
+    def submit_observation(self, observation):
+        self.collectors.advance_to(self.simulation.now)
+        self.collectors.submit(observation.collector_id, observation.timestamp, "incident", observation,
+                               observation.identifier)
+
+    def submit_log(self, collector_id, message, status="info", severity="INFO", occurred_at=None):
+        self.collectors.advance_to(self.simulation.now)
+        occurred_at = self.simulation.now if occurred_at is None else occurred_at
+        self.collectors.submit(collector_id, occurred_at, "log", (message, status, severity))
+
+    def deliver_telemetry(self, event):
+        if event.kind == "incident":
+            observation = replace(event.payload, received_at=event.received_at)
+            if self.incidents.deliver_observation(observation) is False:
+                incident = self.incidents.find_incident(observation.incident_id)
+                if incident is None:
+                    self.log(f"Unknown/evicted incident {observation.incident_id}; unattached evidence "
+                             f"{observation.identifier}; occurred={event.occurred_at:.2f} received={event.received_at:.2f}", "warn", "MED")
+            return
+        message, status, severity = event.payload
+        sensor = self.organization.collectors[event.collector_id].city[3]
+        receipt = event.received_at - event.occurred_at
+        suffix = f" / occurred={event.occurred_at:.2f} received={event.received_at:.2f} lag={receipt:.2f}s"
+        self.log(message + suffix, status, severity, sensor, event.received_at)
+
+    def telemetry_loss(self, event):
+        self.log(f"Telemetry lost: {event.collector_id} queue full; dropped {event.identifier}; "
+                 f"occurred={event.occurred_at:.2f}; coverage incomplete", "warn", "HIGH")
+
+    def next_simulation_boundary(self):
+        return min(self.incidents.next_boundary(), self.collectors.next_boundary())
+
+    def process_simulation_boundary(self):
+        self.collectors.advance_to(self.simulation.now)
+        self.incidents.process_boundary()
+
+    def incident_coverage(self, incident):
+        identifiers = {self.organization.assets[incident.source_id].collector_id}
+        identifiers.update(s.connection.collector_id for s in incident.sessions)
+        degraded = [self.collectors.collectors[i] for i in identifiers
+                    if self.collectors.collectors[i].state != "healthy"]
+        return ", ".join(c.identifier + ":" + c.state for c in sorted(degraded, key=lambda c: c.identifier))
 
     @property
     def attack_cooldown(self):
@@ -622,8 +674,10 @@ class CyberMonitor:
     def attack_cooldown(self, value):
         self.simulation.next_spawn = self.simulation.now + max(0.0, value)
 
-    def log(self, message, status="info", severity="INFO", sensor="SYS"):
-        self.threat_logs.append((self.timestamp(), severity, sensor, message, status))
+    def log(self, message, status="info", severity="INFO", sensor="SYS", received_at=None):
+        stamp = self.timestamp() if received_at is None else time.strftime(
+            "%H:%M:%S", time.gmtime(self.clock_base + received_at))
+        self.threat_logs.append((stamp, severity, sensor, message, status))
         self.total_events += 1
 
     def generate_threat_log(self, init=False, timestamp=None):
@@ -634,14 +688,9 @@ class CyberMonitor:
 
     def log_connection(self, connection, timestamp=None):
         """A peer observation shares the same persistent context as its route."""
-        stamp = self.timestamp() if timestamp is None else time.strftime(
-            "%H:%M:%S", time.gmtime(timestamp))
-        collector = self.organization.collectors[connection.collector_id]
-        self.threat_logs.append((stamp, "INFO" if connection.expected else "MED",
-                                 collector.city[3],
-                                 self.organization.describe(connection),
-                                 "info" if connection.expected else "warn"))
-        self.total_events += 1
+        occurred_at = self.simulation.now if timestamp is None else timestamp - self.clock_base
+        self.submit_log(connection.collector_id, self.organization.describe(connection),
+                        "info" if connection.expected else "warn", "INFO" if connection.expected else "MED", occurred_at)
 
     def toggle_theme(self):
         keys = list(THEMES)
@@ -664,7 +713,8 @@ class CyberMonitor:
     def add_session_route(self, session):
         connection = session.connection
         if session.complete:
-            self.log(f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success")
+            self.submit_log(connection.collector_id,
+                            f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success")
             return None
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
@@ -684,14 +734,15 @@ class CyberMonitor:
         collector = self.organization.collectors[session.connection.collector_id]
         assessment = " / assessment pending" if not session.connection.expected else ""
         incident = f" / incident {session.incident_id}" if session.incident_id else ""
-        self.log(f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}",
-                 "info", "INFO", collector.city[3])
+        self.submit_log(collector.identifier,
+                        f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}")
 
     def sample_telemetry(self):
         traffic = self.simulation.throughput
-        self.metrics.update({"NET": traffic, "CPU": 18 + traffic * 0.09,
-                             "RAM": 62, "DISK": 41, "LATENCY": 15 + traffic * 0.04})
-        self.metrics["TEMP"] = 39 + self.metrics["CPU"] * 0.3
+        self.collectors.sample_payload(self.simulation.collector_bytes)
+        telemetry = self.collectors.metrics()
+        self.metrics.update({"NET": traffic, "CPU": telemetry["cpu"], "RAM": telemetry["ram"],
+                             "BUFFER_KIB": telemetry["buffer_kib"], "LATENCY": telemetry["p95_ms"] or 0.0})
         self.latency_history.append(self.metrics["LATENCY"])
         self.last_eps = self.total_events - self._sample_events
         self._sample_events = self.total_events
@@ -722,7 +773,7 @@ class CyberMonitor:
         sim_dt = dt * self.speed_multiplier
         self.simulation.advance(sim_dt, self.add_session_route,
                                 self.complete_session, self.sample_telemetry,
-                                self.incidents.next_boundary, self.incidents.process_boundary)
+                                self.next_simulation_boundary, self.process_simulation_boundary)
         self.elapsed = self.simulation.now
         for attack in self.attacks:
             attack.update(0)
@@ -740,7 +791,8 @@ class CyberMonitor:
             ("EVENTS / SEC", f"{self.last_eps:,}", "observations / 1s", "accent"),
             ("POLICY ACTIONS", f"{self.blocked:,}", "applied once", "success"),
             ("THROUGHPUT", f"{self.metrics['NET']:.1f} Mb/s", "payload / last 1s", "accent"),
-            ("SENSORS", f"{self.sensors_online:02d} / {len(CITIES):02d}", "all regions online", "success"),
+            ("COVERAGE", f"{self.sensors_online:02d} / {len(CITIES):02d}",
+             f"{len(CITIES) - self.sensors_online} degraded", "success" if self.sensors_online == len(CITIES) else "warn"),
         ]
         if self.critical_incident is not None:
             incident = self.critical_incident
@@ -761,7 +813,9 @@ class CyberMonitor:
         flagged = sum(route.flagged for route in visible_routes)
         if incident:
             route = incident.route
-            self.text(px, py, pw, f"Assessment: {incident.assessment} / reason: {incident.confidence_reason}",
+            coverage = self.incident_coverage(incident)
+            self.text(px, py, pw, f"COVERAGE GAP {coverage}; modeled activity" if coverage else
+                      f"Assessment: {incident.assessment} / reason: {incident.confidence_reason}",
                       "success" if incident.contained else "warn")
         else:
             unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
@@ -847,9 +901,13 @@ class CyberMonitor:
                              if r.flagged and r.dst_city is not None)
         active_codes = {c[3] for r in visible_routes for c in (r.src_city, r.dst_city)
                         if c is not None}
+        degraded_codes = {identifier[4:] for identifier, health in self.collectors.collectors.items()
+                          if health.state != "healthy"}
+        active_codes.update(degraded_codes)
 
         def priority(city):
             return (incident is not None and city in (incident.route.src_city, incident.route.dst_city),
+                    city[3] in degraded_codes,
                     city[3] in flagged_codes, city[3] in active_codes)
 
         # Several cities can share a cell at world scale. Show the busiest node
@@ -858,8 +916,11 @@ class CyberMonitor:
         nodes.sort(key=lambda node: priority(node[2]), reverse=True)
         for nx, ny, city in nodes:
             flagged = city[3] in flagged_codes
-            self.canvas.write_char(px + nx, my + ny, "◆" if flagged else "•",
-                                   self.palette["warn" if flagged else "accent"])
+            health = self.collectors.collectors["COL-" + city[3]]
+            symbol = {"healthy": "◆" if flagged else "•", "delayed": "~", "stale": "!",
+                      "offline": "x", "recovering": "r"}[health.state]
+            self.canvas.write_char(px + nx, my + ny, symbol,
+                                   self.palette["warn" if flagged or health.state != "healthy" else "accent"])
             if city[3] not in active_codes:
                 continue
             for lx, ly in ((nx + 2, ny), (nx - 4, ny), (nx - 1, ny + 1)):
@@ -872,7 +933,7 @@ class CyberMonitor:
         if incident and incident.route.session is not None and incident.route.rate > 0:
             fx, fy = project(*incident.position(), pw, mh, bounds)
             fx, fy = round(fx), round(fy)
-            color = "success" if incident.contained else "critical_head"
+            color = "warn" if self.incident_coverage(incident) else "success" if incident.contained else "critical_head"
             # Target reticle and packet head are drawn last, above node labels.
             for ox, oy, char in ((-1, 0, "["), (1, 0, "]"), (0, -1, "│"),
                                  (0, 1, "│"), (0, 0, "◉")):
@@ -886,16 +947,19 @@ class CyberMonitor:
     def draw_health(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "COLLECTOR HEALTH")
         rows = []
-        for key, label in (("CPU", "CPU load"), ("RAM", "Memory"), ("DISK", "Disk")):
+        for key, label in (("CPU", "CPU max"), ("RAM", "RAM est")):
             value = self.metrics[key]
             bw = max(3, pw - 17)
             fill = min(bw, max(0, round(value / 100 * bw)))
             rows.append((f"{label:<8} {'━' * fill}{'·' * (bw - fill)} {value:4.1f}%", "text"))
+        telemetry = self.collectors.metrics()
+        p95 = "n/a" if telemetry["p95_ms"] is None else f"{telemetry['p95_ms']:.1f}ms"
         rows.extend([
-            (f"Temp     {self.metrics['TEMP']:.1f} C   Fan 1,420 RPM", "muted"),
-            (f"Latency  {self.metrics['LATENCY']:.1f} ms p95", "accent"),
-            ("Packet loss  0.02%", "muted"),
-            ("", "muted"),
+            (f"Ingest p95 {p95} / 60s", "accent"),
+            (f"Event loss {telemetry['loss_percent']:.2f}% / 60s", "warn" if telemetry["loss_percent"] else "muted"),
+            (f"Buffer {telemetry['backlog']} events / {telemetry['buffer_kib']}KiB est", "muted"),
+            (f"Coverage {self.sensors_online}/{len(CITIES)} healthy", "warn" if self.sensors_online != len(CITIES) else "muted"),
+            ("~ lag  ! stale  x off  r catchup", "muted"),
             ("PAYLOAD / 1s BUCKETS", "muted"),
             (sparkline(self.traffic_history, pw), "accent"),
             (f"{self.metrics['NET']:.1f} Mb/s  /  peak {max(self.traffic_history):.1f}", "muted"),
@@ -913,8 +977,8 @@ class CyberMonitor:
     def draw_events(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "EVENT STREAM")
         compact = pw < 60
-        self.text(px, py, pw, "TIME UTC  SITE:ASSET / PEER" if compact else
-                  "TIME UTC  LEVEL COL   SITE:ASSET / OBSERVATION", "muted")
+        self.text(px, py, pw, "RECV UTC  SITE:ASSET / PEER" if compact else
+                  "RECV UTC  LEVEL COL   SITE:ASSET / OBSERVATION", "muted")
         visible = list(self.threat_logs)[-max(0, ph - 1):]
         for i, (stamp, severity, sensor, message, status) in enumerate(visible[:ph - 1]):
             ry = py + i + 1
@@ -943,7 +1007,15 @@ class CyberMonitor:
             else:
                 context = self.organization.context(route.connection)
                 assessment = policy if route.critical else ("OK" if route.connection.expected else "NEW")
-            value = (f"{context} {assessment} {route.kind}" if pw < 40 else
+                health = self.collectors.collectors[route.connection.collector_id]
+                if health.state != "healthy":
+                    context += "!"
+                    assessment = "GAP " + health.state + " / modeled"
+            compact_status = ("!" if route.connection and self.collectors.collectors[route.connection.collector_id].state != "healthy" else
+                              "P" if route.critical and self.critical_incident.disposition == "partially contained" else
+                              {"requested": "R", "applied": "A", "verified": "V"}.get(self.critical_incident.response_phase, "?")
+                              if route.critical else "OK" if route.connection and route.connection.expected else "NEW")
+            value = (f"{route.kind} {compact_status} {context}" if pw < 40 else
                      f"{context:<22} {route.kind:<6} {route.rate:4.1f} {assessment}")
             if pw >= 58 and route.session is not None:
                 session = route.session
@@ -975,11 +1047,12 @@ class CyberMonitor:
         self.text(width - len(header) - 1, 0, len(header), header, "muted")
         if self.critical_incident is not None:
             incident = self.critical_incident
-            banner = f" P1 {incident.identifier} / {incident.stage} / "
-            banner += (incident.response_status if incident.actions else
+            coverage = self.incident_coverage(incident)
+            banner = f" P1 {incident.identifier} / {incident.visible_stage} / "
+            banner += ("COVERAGE GAP " + coverage if coverage else incident.response_status if incident.actions else
                        f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}")
             self.text(1, 1, width - 2, banner.ljust(width - 2),
-                      "critical_ok" if incident.contained else "critical")
+                      "critical_ok" if incident.contained and not coverage else "critical")
             self.text(1, 2, width - 2,
                       f"Sev {incident.severity} | Conf {incident.confidence} | "
                       f"Disp {incident.disposition} | Resp {incident.response_phase}", "text")
@@ -1016,6 +1089,8 @@ class CyberMonitor:
                 "flow-history    Completed session summaries (last 120)",
                 "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
                 "dismiss [reason] Keep evidence; does not stop active traffic",
+                "collectors [ID] Heartbeats, coverage, lag, queue and loss",
+                "outage COL-ID | recover COL-ID | delay COL-ID [seconds]",
                 "incident        Active or most recent incident facts and session IDs",
                 "timeline [N]    Retained observations; N selects one at small sizes",
                 "incidents       Retained unresolved summaries (last 64)",
@@ -1037,13 +1112,36 @@ class CyberMonitor:
             self.active_mode = "dashboard"
         elif command == "status":
             self.shell_history.extend([
-                f"Sensors: {self.sensors_online}/{len(CITIES)} online",
+                f"Sensors: {self.sensors_online}/{len(CITIES)} healthy; degraded coverage shown on map",
                 f"Payload: {self.metrics['NET']:.4f} Mb/s / previous complete 1s bucket; "
                 f"total {self.simulation.total_bytes:,} bytes; no hidden aggregate",
-                f"Latency: {self.metrics['LATENCY']:.1f} ms / modeled load estimate",
+                f"Ingestion p95: {self.collectors.metrics()['p95_ms']} ms / trailing 60s; bounded256 samples/collector",
+                f"Event loss: {self.collectors.metrics()['loss_percent']:.2f}% / 60s; "
+                f"dropped {self.collectors.metrics()['dropped']}; queue {self.collectors.metrics()['backlog']}",
                 f"Processed: {self.total_events:,}; applied policy actions: {self.blocked:,}",
                 f"Response counts: {self.response_counts}",
             ])
+        elif command == "collectors" or command.startswith("collectors "):
+            parts = command.split()
+            identifier = parts[1].upper() if len(parts) == 2 else None
+            if identifier and identifier not in self.collectors.collectors:
+                self.shell_history.append("Unknown collector ID")
+            else:
+                for health in self.collectors.collectors.values():
+                    if identifier is None or health.identifier == identifier:
+                        self.shell_history.extend(textwrap.wrap(health.summary(), width=72))
+        elif command and command.split()[0] in ("outage", "recover", "delay"):
+            parts = command.split()
+            try:
+                if len(parts) not in (2, 3) or len(parts) == 3 and parts[0] != "delay":
+                    raise ValueError("Use outage COL-ID, recover COL-ID, or delay COL-ID [seconds]")
+                mode = {"outage": "outage", "recover": "recovering", "delay": "delayed"}[parts[0]]
+                health = self.collectors.set_mode(parts[1].upper(), mode, self.simulation.now,
+                                                  float(parts[2]) if len(parts) == 3 else 3.0)
+                self.shell_history.extend(textwrap.wrap(health.summary(), width=72))
+                self.log(f"Operator {parts[0]} {health.identifier}; coverage {health.state}", "warn")
+            except ValueError as error:
+                self.shell_history.append(str(error))
         elif command == "scenario" or command.startswith("scenario "):
             try:
                 variant = command.split()[1] if len(command.split()) == 2 else "exfiltration"
@@ -1080,6 +1178,8 @@ class CyberMonitor:
         elif command == "actions":
             incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
             if incident and incident.actions:
+                if self.incident_coverage(incident):
+                    self.shell_history.append("COVERAGE GAP: actuator model results; collector evidence may be pending")
                 for action in incident.actions:
                     self.shell_history.extend(action.detail_lines())
             else:
@@ -1124,14 +1224,21 @@ class CyberMonitor:
                     self.shell_history.extend(observation.detail_lines())
             else:
                 self.shell_history.extend(incident.detail_lines())
+                coverage = self.incident_coverage(incident)
+                if coverage:
+                    self.shell_history.append("COVERAGE GAP " + coverage + "; session/action facts are modeled")
                 self.shell_history.append("Timeline timestamps are elapsed simulation seconds")
                 for session in incident.sessions:
                     self.shell_history.extend(session.detail_lines())
         elif command == "flows":
             for route in self.attacks:
                 self.shell_history.append(self.organization.describe(route.connection))
+                health = self.collectors.collectors[route.connection.collector_id]
+                if health.state != "healthy":
+                    self.shell_history.append(f"COVERAGE GAP {health.identifier}:{health.state}; "
+                                              "session facts are modeled, fresh observations unavailable")
                 if route.session.incident_id:
-                    self.shell_history.append(f"Incident {route.session.incident_id} / {self.critical_incident.stage}")
+                    self.shell_history.append(f"Incident {route.session.incident_id} / {self.critical_incident.visible_stage}")
                 self.shell_history.extend(route.session.detail_lines())
         elif command == "flow-history":
             for session in self.simulation.history:
