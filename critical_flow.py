@@ -28,6 +28,7 @@ class Observation:
     response_status: str = "none"
     assessment_update: bool = False
     received_at: float = None
+    service: str = ""
 
     def summary(self):
         session = " / " + self.session_id if self.session_id else ""
@@ -299,7 +300,8 @@ class IncidentSimulation:
                                   session.identifier if session else "", message,
                                   action.identifier if action else "", result, incident.severity,
                                   confidence, reason, assessment,
-                                  incident.disposition, incident.response_phase, assessment_update)
+                                  incident.disposition, incident.response_phase, assessment_update,
+                                  service=session.service if session else "")
         if self.submit_observation:
             self.submit_observation(observation)
         else:
@@ -538,6 +540,7 @@ class IncidentSimulation:
         if session is None:
             raise RuntimeError("Scenario reservation invariant violated")
         session.incident_id = incident.identifier
+        session.severity = incident.severity
         if incident.variant == "benign":
             session.schedule_context = dict(incident.scheduled_job)
         incident.sessions.append(session)

@@ -22,6 +22,7 @@ from terminal_input import InputDecoder, MOUSE_OFF, MOUSE_ON, WindowsConsoleInpu
 from critical_flow import IncidentSimulation
 from collector_model import CollectorSimulation
 from investigation import Investigation
+from investigation_catalog import EventCatalog, EventRecord, LogPayload
 from simulation_model import Organization, SessionSimulation, valid_advance
 
 APP_NAME = "Global Threat Monitor"
@@ -502,6 +503,7 @@ class CyberMonitor:
                                              on_applied=self.response_applied,
                                              submit_observation=self.submit_observation)
         self.threat_logs = deque(maxlen=80)
+        self.event_catalog = EventCatalog()
         self.shell_history = deque(maxlen=100)
         self.shell_input = ""
         self.breach_time_left = 10.0
@@ -619,7 +621,8 @@ class CyberMonitor:
 
     def log_observation(self, observation):
         sensor = self.organization.collectors[observation.collector_id].city[3]
-        self.log(observation.summary(), "warn", "CRIT", sensor, observation.received_at)
+        self.log(observation.summary(), "warn", "CRIT", sensor, observation.received_at,
+                 record=EventRecord.observation(observation))
 
     @property
     def sensors_online(self):
@@ -630,10 +633,15 @@ class CyberMonitor:
         self.collectors.submit(observation.collector_id, observation.timestamp, "incident", observation,
                                observation.identifier)
 
-    def submit_log(self, collector_id, message, status="info", severity="INFO", occurred_at=None):
+    def submit_log(self, collector_id, message, status="info", severity="INFO", occurred_at=None,
+                   connection=None, incident_id="", session_id="", action_id=""):
         self.collectors.advance_to(self.simulation.now)
         occurred_at = self.simulation.now if occurred_at is None else occurred_at
-        self.collectors.submit(collector_id, occurred_at, "log", (message, status, severity))
+        payload = LogPayload(message, status, severity,
+                             connection.source_id if connection else "",
+                             connection.peer_id if connection else "",
+                             connection.service if connection else "", incident_id, session_id, action_id)
+        self.collectors.submit(collector_id, occurred_at, "log", payload)
 
     def deliver_telemetry(self, event):
         if event.kind == "incident":
@@ -642,17 +650,26 @@ class CyberMonitor:
                 incident = self.incidents.find_incident(observation.incident_id)
                 if incident is None:
                     self.log(f"Unknown/evicted incident {observation.incident_id}; unattached evidence "
-                             f"{observation.identifier}; occurred={event.occurred_at:.2f} received={event.received_at:.2f}", "warn", "MED")
+                             f"{observation.identifier}; occurred={event.occurred_at:.2f} received={event.received_at:.2f}",
+                             "warn", "MED", record=EventRecord.telemetry(event))
             return
-        message, status, severity = event.payload
+        payload = event.payload
         sensor = self.organization.collectors[event.collector_id].city[3]
         receipt = event.received_at - event.occurred_at
         suffix = f" / occurred={event.occurred_at:.2f} received={event.received_at:.2f} lag={receipt:.2f}s"
-        self.log(message + suffix, status, severity, sensor, event.received_at)
+        self.log(payload.message + suffix, payload.status, payload.severity, sensor, event.received_at,
+                 record=EventRecord.telemetry(event))
 
     def telemetry_loss(self, event):
-        self.log(f"Telemetry lost: {event.collector_id} queue full; dropped {event.identifier}; "
-                 f"occurred={event.occurred_at:.2f}; coverage incomplete", "warn", "HIGH")
+        lost = EventRecord.telemetry(event)
+        message = (f"Telemetry lost: {event.collector_id} queue full; dropped {event.identifier}; "
+                   f"occurred={event.occurred_at:.2f}; coverage incomplete")
+        notice = self.event_catalog.system(self.simulation.now, message, "HIGH", event.collector_id,
+                                          kind="loss", source_id=lost.source_id, peer_id=lost.peer_id,
+                                          service=lost.service, incident_id=lost.incident_id,
+                                          session_id=lost.session_id, action_id=lost.action_id,
+                                          lost_event_id=event.identifier, lost_occurred_at=event.occurred_at)
+        self.log(message, "warn", "HIGH", record=notice)
 
     def next_simulation_boundary(self):
         return min(self.incidents.next_boundary(), self.collectors.next_boundary())
@@ -676,10 +693,13 @@ class CyberMonitor:
     def attack_cooldown(self, value):
         self.simulation.next_spawn = self.simulation.now + max(0.0, value)
 
-    def log(self, message, status="info", severity="INFO", sensor="SYS", received_at=None):
+    def log(self, message, status="info", severity="INFO", sensor="SYS", received_at=None,
+            record=None, collector_id="", kind="system"):
         stamp = self.timestamp() if received_at is None else time.strftime(
             "%H:%M:%S", time.gmtime(self.clock_base + received_at))
         self.threat_logs.append((stamp, severity, sensor, message, status))
+        self.event_catalog.append(record or self.event_catalog.system(self.simulation.now, message,
+                                  severity, collector_id, kind=kind, status=status))
         self.total_events += 1
 
     def generate_threat_log(self, init=False, timestamp=None):
@@ -688,11 +708,14 @@ class CyberMonitor:
                       self.organization.choose_connection())
         self.log_connection(connection, timestamp)
 
-    def log_connection(self, connection, timestamp=None):
+    def log_connection(self, connection, timestamp=None, session=None):
         """A peer observation shares the same persistent context as its route."""
         occurred_at = self.simulation.now if timestamp is None else timestamp - self.clock_base
+        session = session or self.investigation.find_session(self, connection.identifier)
         self.submit_log(connection.collector_id, self.organization.describe(connection),
-                        "info" if connection.expected else "warn", "INFO" if connection.expected else "MED", occurred_at)
+                        "info" if connection.expected else "warn", "INFO" if connection.expected else "MED", occurred_at,
+                        connection=connection, session_id=connection.identifier,
+                        incident_id=session.incident_id or "" if session else "")
 
     def toggle_theme(self):
         keys = list(THEMES)
@@ -716,13 +739,15 @@ class CyberMonitor:
         connection = session.connection
         if session.complete:
             self.submit_log(connection.collector_id,
-                            f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success")
+                            f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success",
+                            connection=connection, incident_id=session.incident_id or "",
+                            session_id=session.identifier, action_id=session.response_action_id or "")
             return None
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
                              self.palette, connection, session)
         self.attacks.append(route)
-        self.log_connection(connection)
+        self.log_connection(connection, session=session)
         audio.play_packet()
         return route
 
@@ -737,7 +762,9 @@ class CyberMonitor:
         assessment = " / assessment pending" if not session.connection.expected else ""
         incident = f" / incident {session.incident_id}" if session.incident_id else ""
         self.submit_log(collector.identifier,
-                        f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}")
+                        f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}",
+                        connection=session.connection, incident_id=session.incident_id or "",
+                        session_id=session.identifier, action_id=session.response_action_id or "")
 
     def sample_telemetry(self):
         traffic = self.simulation.throughput
@@ -977,11 +1004,20 @@ class CyberMonitor:
             self.text(px, py + i, pw, value, color)
 
     def draw_events(self, x, y, w, h):
-        px, py, pw, ph = self.panel(x, y, w, h, "EVENT STREAM")
+        matching = self.investigation.matching_events(self)
+        title = f"EVENTS {len(matching)} / FILTERED" if self.investigation.filters.values else "EVENT STREAM"
+        px, py, pw, ph = self.panel(x, y, w, h, title)
         compact = pw < 60
         self.text(px, py, pw, "RECV UTC  SITE:ASSET / PEER" if compact else
                   "RECV UTC  LEVEL COL   SITE:ASSET / OBSERVATION", "muted")
-        visible = list(self.threat_logs)[-max(0, ph - 1):]
+        records = matching[-max(0, ph - 1):]
+        visible = [(time.strftime("%H:%M:%S", time.gmtime(self.clock_base +
+                        (r.received_at if r.received_at is not None else r.occurred_at))),
+                    {"critical": "CRIT", "med": "MED"}.get(r.severity, r.severity.upper()),
+                    self.organization.collectors[r.collector_id].city[3] if r.collector_id else "SYS",
+                    ((self.organization.asset_label(r.source_id) if r.source_id else "") +
+                     (">" + self.organization.asset_label(r.peer_id) if r.peer_id else "") + " / "
+                     if r.source_id or r.peer_id else "") + r.message, r.status) for r in records]
         for i, (stamp, severity, sensor, message, status) in enumerate(visible[:ph - 1]):
             ry = py + i + 1
             self.text(px, ry, 8, stamp, "muted")
@@ -992,6 +1028,8 @@ class CyberMonitor:
             self.text(px + 10, ry, 4, severity, color)
             self.text(px + 15, ry, 3, sensor, "accent")
             self.text(px + 20, ry, pw - 20, message, "text")
+        if not matching and ph > 1:
+            self.text(px, py + 1, pw, "No matches; O shows filters/coverage", "muted")
 
     def draw_flows(self, x, y, w, h):
         px, py, pw, ph = self.panel(x, y, w, h, "ACTIVE FLOWS")
@@ -1075,7 +1113,9 @@ class CyberMonitor:
         self.draw_health(right_x, 8, right_w, top_h)
         self.draw_events(0, lower_y, left_w, lower_h)
         self.draw_flows(right_x, lower_y, right_w, lower_h)
-        self.text(1, height - 1, width - 2, "E inspect flows | I inspect incident | C console | P pause | Q quit", "muted")
+        self.text(1, height - 1, width - 2, "E flows | I incident | V archive | O events | C console | P pause | Q quit", "muted")
+        if self.investigation.filters.values:
+            self.text(1, height - 2, width - 2, "Filters: " + self.investigation.filters.label() + " | O inspect/X clear", "accent")
 
     def draw_shell_screen(self):
         width, height = self.canvas.width, self.canvas.height
@@ -1093,13 +1133,17 @@ class CyberMonitor:
                 "flows           Session identity, ports, state, bytes, packets and 1s rates",
                 "sessions        Start DNS, HTTPS, SSH and backup demonstration",
                 "flow-history    Completed session summaries (last 120)",
+                "archive [CT-ID] All retained outcomes (64); optional ID opens details",
+                "events [N]      Filtered occurrence/receipt/lag; N opens full record",
+                "filter key=value... Replace shared site/location/severity/service/incident",
+                "filter clear    Clear all filters; filter alone shows state and counts",
                 "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
                 "dismiss [reason] Keep evidence; does not stop active traffic",
                 "collectors [ID] Heartbeats, coverage, lag, queue and loss",
                 "outage COL-ID | recover COL-ID | delay COL-ID [seconds]",
                 "incident        Active or most recent incident facts and session IDs",
                 "timeline [N]    Retained observations; N selects one at small sizes",
-                "incidents       Retained unresolved summaries (last 64)",
+                "incidents       Filtered retained outcomes (last 64) and active incident",
                 "response        Preview explicit incident targets/scopes",
                 "block session FLOW-ID | block peer ASSET-ID PEER-ID",
                 "isolate endpoint ASSET-ID | revoke credential aster.ws1",
@@ -1114,6 +1158,65 @@ class CyberMonitor:
                 "nuke-gibson     Start the containment drill",
                 "exit            Return to dashboard",
             ])
+        elif command == "filter" or command.startswith("filter "):
+            try:
+                expression = cmd.strip()[7:] if command.startswith("filter ") else None
+                if expression is not None:
+                    self.investigation.filters.apply(self, "" if expression.lower() == "clear" else expression)
+                self.shell_history.extend(textwrap.wrap("Filters: " + self.investigation.filters.label(), width=72))
+                retained = list(self.incidents.history) + ([self.critical_incident] if self.critical_incident else [])
+                self.shell_history.append(f"Matches: incidents={sum(self.investigation.filters.matches(self, i) for i in retained)} "
+                                          f"received events={len(self.investigation.matching_events(self))}")
+                self.shell_history.extend(textwrap.wrap(self.investigation.filters.coverage(self) or
+                                          "Relevant collectors healthy; no matches does not imply safety", width=72))
+            except ValueError as error:
+                self.shell_history.extend(textwrap.wrap("Filter error: " + str(error), width=72))
+        elif command == "events" or command.startswith("events "):
+            records = self.investigation.matching_events(self)
+            try:
+                if command != "events":
+                    index = int(command.split()[1])
+                    if len(command.split()) != 2 or not 1 <= index <= len(records):
+                        raise ValueError
+                    for line in self.investigation.event_lines(self, records[index - 1]):
+                        self.shell_history.extend(textwrap.wrap(line, width=72))
+                else:
+                    for index, record in enumerate(records, 1):
+                        receipt = (f"{record.received_at:.2f} lag={record.lag:.2f}s"
+                                   if record.received_at is not None else "unknown")
+                        self.shell_history.append(f"{index}: {record.identifier} occurred={record.occurred_at:.2f} "
+                                                  f"received={receipt}")
+                    if not records:
+                        self.shell_history.append("No received events match these filters; coverage is separate.")
+                self.shell_history.extend(textwrap.wrap("Filters: " + self.investigation.filters.label(), width=72))
+                self.shell_history.append(f"Matches: {len(records)} received events; order=occurrence, then ID")
+                self.shell_history.extend(textwrap.wrap(self.investigation.filters.coverage(self) or
+                                          "Relevant collectors healthy; absence is not evidence of safety", width=72))
+            except (ValueError, IndexError):
+                self.shell_history.append(f"Use events N, with N from 1 to {len(records)}")
+        elif command in ("archive", "incidents") or command.startswith("archive "):
+            records = list(self.incidents.history) + ([self.critical_incident] if self.critical_incident else [])
+            matching = [r for r in records if self.investigation.filters.matches(self, r)]
+            if command in ("archive", "incidents"):
+                for incident in matching:
+                    self.shell_history.extend(textwrap.wrap(incident.summary(), width=72))
+                if not matching:
+                    self.shell_history.append("No retained incidents match; coverage is separate.")
+                self.shell_history.extend(textwrap.wrap("Filters: " + self.investigation.filters.label(), width=72))
+                self.shell_history.append(f"Matches: {len(matching)} incidents; archive limit=64 completed")
+            else:
+                parts = command.split()
+                incident = self.incidents.find_incident(parts[1].upper()) if len(parts) == 2 else None
+                if incident is None:
+                    self.shell_history.append("Incident unavailable: unknown ID or evicted from 64-record archive")
+                elif incident not in matching:
+                    self.shell_history.append("Incident excluded by current filters; filter clear shows it")
+                else:
+                    self.investigation.open_list(self, "incidents", archive=True)
+                    view = self.investigation.current
+                    view.selected_id, view.selected = incident.identifier, incident
+                    self.investigation.handle_key(self, "enter")
+                    self.active_mode = "inspection"
         elif command in ("exit", "quit"):
             self.active_mode = "dashboard"
         elif command == "status":
@@ -1145,7 +1248,8 @@ class CyberMonitor:
                 health = self.collectors.set_mode(parts[1].upper(), mode, self.simulation.now,
                                                   float(parts[2]) if len(parts) == 3 else 3.0)
                 self.shell_history.extend(textwrap.wrap(health.summary(), width=72))
-                self.log(f"Operator {parts[0]} {health.identifier}; coverage {health.state}", "warn")
+                self.log(f"Operator {parts[0]} {health.identifier}; coverage {health.state}", "warn",
+                         collector_id=health.identifier, kind="operator")
             except ValueError as error:
                 self.shell_history.append(str(error))
         elif command == "scenario" or command.startswith("scenario "):
@@ -1207,16 +1311,13 @@ class CyberMonitor:
                 self.shell_history.extend(action.detail_lines())
             except ValueError as error:
                 self.shell_history.append("Response error: " + str(error))
-        elif command in ("incident", "timeline", "incidents") or command.startswith("timeline "):
+        elif command in ("incident", "timeline") or command.startswith("timeline "):
             incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
-            if command == "incidents":
-                self.shell_history.extend(item.summary() for item in self.incidents.history)
-                if self.critical_incident:
-                    self.shell_history.append(self.critical_incident.summary())
-            elif incident is None:
+            if incident is None:
                 self.shell_history.append("No incident observations yet")
             elif command.startswith("timeline"):
-                observations = list(incident.timeline)
+                observations = self.investigation.filtered_evidence(self, incident.timeline)
+                count = len(observations)
                 if command != "timeline":
                     try:
                         index = int(command.split()[1])
@@ -1228,6 +1329,10 @@ class CyberMonitor:
                         return
                 for observation in observations:
                     self.shell_history.extend(observation.detail_lines())
+                self.shell_history.extend(textwrap.wrap("Filters: " + self.investigation.filters.label(), width=72))
+                self.shell_history.append(f"Timeline matches={count}/{len(incident.timeline)}; order=occurrence, then ID")
+                if not observations:
+                    self.shell_history.append("No received timeline matches; retained evidence/coverage are separate.")
             else:
                 self.shell_history.extend(incident.detail_lines())
                 coverage = self.incident_coverage(incident)
@@ -1324,7 +1429,7 @@ class CyberMonitor:
         if key == "quit":
             return False
         if self.active_mode == "inspection":
-            if key == "q":
+            if key == "q" and not self.investigation.editing:
                 return False
             if not self.investigation.handle_key(self, key):
                 self.active_mode = "dashboard"
@@ -1363,6 +1468,8 @@ class CyberMonitor:
             self.toggle_theme()
         elif key == "p":
             self.paused = not self.paused
+        elif key == "x":
+            self.investigation.filters.values = {}
         elif key == "r":
             keys = list(VIEWS)
             self.view = keys[(keys.index(self.view) + 1) % len(keys)]
@@ -1376,8 +1483,9 @@ class CyberMonitor:
             self.trigger_attack()
         elif key == "f":
             self.start_critical_incident()
-        elif key in ("e", "i"):
-            self.investigation.open_list(self, "flows" if key == "e" else "incidents")
+        elif key in ("e", "i", "o", "v"):
+            self.investigation.open_list(self, {"e": "flows", "i": "incidents", "o": "events", "v": "incidents"}[key],
+                                         archive=key == "v")
             self.active_mode = "inspection"
         elif key == "c":
             self.active_mode = "shell"
@@ -1396,9 +1504,9 @@ def main():
     parser = argparse.ArgumentParser(
         prog="global-threat-monitor", description=f"{APP_NAME} v{APP_VERSION}. {APP_DESCRIPTION}",
         epilog="Keys: Q/Esc quit, P pause, T theme, R region, B borders, wheel/[ ] zoom, arrows/HJKL pan, "
-               "0 reset, A flow, F critical incident, E inspect flows, I inspect incident, C console, G drill, "
+               "0 reset, A flow, F critical incident, E inspect flows, I inspect incident, V archive, O events, C console, G drill, "
                "+/- speed, S audio. Inspection: N/M select, Enter details, U/D scroll, Esc back; "
-               "E related flows in incident details, I linked incident in flow details.")
+               "E related flows in incident details, I linked incident in flow details, V active/archive, / filters, X clear.")
     parser.add_argument("-t", "--theme", choices=list(THEMES), help="Set startup theme.")
     parser.add_argument("-s", "--sound", action="store_true", help="Enable optional Windows chimes.")
     parser.add_argument("-n", "--no-sound", action="store_true", help="Mute chimes.")

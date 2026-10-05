@@ -19,6 +19,7 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
 - Correlated critical incidents, grounded confidence, benign lookalikes, and scoped response
+- Keyboard investigation, retained incident outcomes, and combined structured filters
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
 - Four color themes with a persisted selection
@@ -94,6 +95,10 @@ A         Add a simulated traffic flow
 F         Trigger the correlated exfiltration scenario immediately
 E         Open active flow selection (N/M previous/next; Enter inspects)
 I         Open active incident selection (N/M previous/next; Enter inspects)
+V         Open retained incident archive; in flow/incident lists toggle active/archive
+O         Open received-event history with occurrence, receipt and lag
+/         Edit combined key=value filters during inspection (Enter applies)
+X         Clear investigation filters (dashboard or inspection)
 C         Open simulation console. Esc returns to the dashboard
 G         Start a containment drill. Press keys to complete; Esc cancels
 + / =     Increase speed
@@ -654,7 +659,7 @@ related session list, including completed related sessions; **I** in a related
 flow's details opens its incident. These links use the same IDs as observations
 and response actions. **Esc** returns one level, preserving the previous list's
 selection or detail scroll. Reopening an already open linked detail returns to
-that frame and its scroll, keeping navigation bounded to five frames. Esc from
+that frame and its scroll, keeping navigation bounded to six frames. Esc from
 the outer list returns to the prior regional map and exact viewport. Map arrows,
 H/J/K/L, wheel zoom, brackets and region controls continue to work on the dashboard;
 inspection uses its dedicated controls. Console text entry keeps its existing
@@ -668,8 +673,8 @@ completion and while a subsequent incident starts. Completed selections remain
 available while the existing bounded model history retains them (120 ordinary
 sessions, 64 incidents, and each retained incident's related sessions). If a record
 is evicted, its selected ID shows an explicit unavailable message and never
-silently points to a replacement row. Historical browsing and filters are a later
-slice; these entry lists select active records plus the retained selection.
+silently points to a replacement row. E/I entry lists select active records plus
+the retained selection; V opens historical incident browsing described below.
 
 Flow details show assets/sites, example addresses and ports, application service,
 transport, encryption, directional payload totals and trailing-one-second Mb/s,
@@ -702,3 +707,115 @@ outbound transfer, then **E**, **Enter** to inspect. Return with Esc twice, open
 `block session FLOW-ID`. Leave the console with Esc and resume with P. To inspect
 the completed transfer afterward, use **I**, **Enter**, **E**, select its stable
 flow ID with N/M, then Enter; D scrolls to the policy history and received evidence.
+
+## Historical investigation and combined filters
+
+**V** on the dashboard opens the retained incident archive. **V** in a flow or
+incident list toggles active versus retained plus active records; linked incident
+session lists already include completed sessions. **O** on the dashboard opens
+received event history. Lists use N/M and Enter, details use U/D and Esc, with
+**I** following an event's retained incident and **E** following its retained
+session. Event details explicitly identify an unavailable link after its model
+archive evicts it. Contained, dismissed, partially contained and unresolved
+incidents keep their original severity, final disposition, immutable received
+evidence, response lifecycles, asset context and completed session accounting.
+An incident's session summaries survive ordinary session-history eviction.
+
+Press **/** in inspection to edit filters, then Enter to replace the whole filter
+atomically, or Esc to cancel. An empty expression clears filters. **X** clears all
+filters on the dashboard or in inspection. Filter editing accepts printable text,
+including Q, and retains the simulation's existing live/paused state. Ctrl+C quits
+from the editor. Filters persist across receipt, completion, view changes and
+navigation; reopening inspection uses the same filters. Keyboard selection stays
+on its ID even if a filter excludes it, with an explicit excluded message. Enter
+opens only a selected matching row; N/M chooses a match. If a list was opened
+empty, newly arriving matches do not select themselves: press N/M to select one.
+
+Filters combine with AND, and site/location each match either endpoint of a
+record. For example, a transfer from Athens to Dubai matches both `site=ATH` and
+`location=DXB`. Supported fields are:
+
+| Field | Values and meaning |
+| --- | --- |
+| `site` | Site code, ID or quoted full name: ATH, FRA, SIN, REM, EXT, SITE-ATH |
+| `location` | City code or quoted city name, e.g. DXB, Athens, "New York"; `unknown` selects actual unknown geography |
+| `severity` | info, low, med, high, critical; CRIT and medium are aliases. Incident/session severity remains the original priority after resolution or incident eviction. |
+| `service` | DNS, HTTPS, SSH, BACKUP. Incident matching uses its known modeled route service and related session services. Received events use only their captured service; authentication without a network session has no service and does not match HTTPS. |
+| `incident` | Stable ID, e.g. CT-001. An unknown but valid ID produces zero matches. |
+
+Case does not matter. Keys cannot repeat. Invalid keys/values leave all previous
+filters intact; no partially applied filter is possible. Full filter state wraps
+at 80×24, matching counts remain visible, and empty results state that collector
+coverage is separate. Coverage includes the collectors observing a peer's
+connections, so filtering unmanaged external peers does not imply healthy
+visibility merely because those peers own no collector. If a scope has no known
+observer, the UI labels scope visibility unknown and reports global coverage.
+
+Incident and flow details keep the full contextual summary/actions/related session
+facts while filtering their received timeline/evidence. The matching/retained
+count is shown. A zero-match timeline with retained evidence explicitly suggests X
+to clear filters; truly missing received evidence stays distinct. No buffered or
+dropped original observation is fabricated. Loss notifications are typed local
+notices with the dropped event ID and original occurrence; they are not receipts
+of the original evidence. System/operator notices carry only known metadata;
+filtering never derives truth from words inside their messages.
+
+The console shares these filters and offers readable individual records:
+
+```text
+filter site=ATH location=Dubai severity=critical service=HTTPS incident=CT-001
+filter                      Show current state, matches and coverage
+filter clear                Clear all dimensions
+archive                     Matching retained outcomes plus active incidents
+archive CT-001              Open retained incident details if it matches
+incidents                   Alias for archive summaries
+events                      Matching received events, numbered chronologically
+events 1                    Full first matching record, links and times
+timeline [N]                Matching active/latest incident observations
+```
+
+Commands `flows` and `flow-history` retain their existing console output; E/V inspection lists apply
+shared filters to sessions. An incident detail's full context can explain why an
+evidence filter matches zero records.
+
+Display ordering is **occurrence time, then stable ID** for received events and
+filtered timelines. IDs contain zero-padded sequences; incident timelines retain
+the model's original sequence for equal occurrences. Archive incidents/sessions
+use start time, then ID. Every event detail exposes elapsed simulation occurrence,
+actual receipt, and receipt-minus-occurrence lag. The dashboard stream follows
+this occurrence convention but its UTC column remains **receipt UTC**; delayed
+receipt timestamps can therefore be non-monotonic in the occurrence-ordered feed.
+Dashboard event counts show the number matching the received catalog, and O shows
+the full filter and coverage state. New receipts never clear filters or retarget a
+selected record.
+
+Retention is in memory for the current process only:
+
+| Record | Bound and eviction rule |
+| --- | --- |
+| Completed incidents | Last 64 completed, oldest completion evicted; active incident is separate |
+| Incident evidence/actions | Up to 64 received timeline records, eight actions and five related session summaries per incident |
+| Ordinary session history | Last 120 completed/stopped/denied sessions; active sessions bounded to 12. Archive flow browsing unions these with sessions owned by retained incidents and removes duplicate IDs. |
+| Received event catalog | Last 120 receipts/notices, oldest receipt insertion evicted. Occurrence sorting changes display order, never retention. |
+| Keyboard navigation | Six frames, with repeated linked targets returning to the existing frame |
+
+A selected ID is resolved against these model archives on every update/render.
+Crossing a retention boundary shows `unavailable; record evicted`, with no stale
+summary and no automatic replacement selection. The independent received catalog
+may evict an event while its incident still retains that evidence, or retain a
+late receipt after the incident itself has been evicted; both cases show honest
+link availability.
+
+Run the fixed-clock demonstration and focused fixtures:
+
+```sh
+python3 demo_history.py
+python3 -m unittest test_investigation_history -v
+```
+
+The demo blocks a transfer, advances until every live route disappears, finds the
+contained incident with all five combined filters, follows its completed session
+and action evidence, then shows a collector outage and delayed receipt into the
+archived timeline. Regression fixtures also investigate all four historical
+outcomes, combine/clear filters, preserve ID selection across receipts, and cross
+real 64→65 incident and 120→121 session/event retention boundaries.

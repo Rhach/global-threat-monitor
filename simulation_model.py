@@ -47,6 +47,7 @@ class Session:
         self.proto, self.resp_port, self.encryption, self.lifetime, self.segments = self.PROFILES[self.service]
         self.profile = profile or "baseline"
         self.incident_id = None
+        self.severity = "info" if connection.expected else "med"
         self.credential_id = None
         self.response_action_id = None
         if profile is not None:
