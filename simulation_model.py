@@ -359,6 +359,8 @@ class Organization:
             ExpectedConnection("REM-UNK", "FRA-APP", "HTTPS", "remote application"),
         )
         self._connection_number = 0
+        self.credentials = {"aster.ws1": "ATH-WS1", "aster.admin": "ATH-ADM",
+                            "aster.backup": "FRA-BKP"}
 
     def city_for(self, asset_id):
         """None is deliberately preserved for unknown geography."""

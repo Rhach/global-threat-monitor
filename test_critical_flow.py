@@ -101,7 +101,9 @@ class CriticalFlowTests(unittest.TestCase):
         b.incidents.automatic = True
         b.critical_cooldown = 0
         # Process the current boundary, exactly as advance does before moving.
-        b.incidents.process_boundary()
+        # Pin the scheduled variant while comparing the shared exfiltration path.
+        with patch.object(b.incidents.variant_rng, "choice", return_value="exfiltration"):
+            b.incidents.process_boundary()
         self.assertEqual(self.snapshot(a), self.snapshot(b))
         a.handle_key("f")
         a.process_shell_command("scenario")

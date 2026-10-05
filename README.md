@@ -17,7 +17,7 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - Traffic history, detection counts, and an active-flow table
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
-- Correlated critical incidents with camera follow and explicit scoped response
+- Correlated critical incidents, grounded confidence, benign lookalikes, and scoped response
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Optional containment drill with `G`
 - Four color themes with a persisted selection
@@ -97,7 +97,7 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -176,10 +176,10 @@ ACK-only packets and teardown. DNS has one request and one response packet.
 Live connection state is `S0` before a DNS reply, otherwise `S1`; normal
 completion is `SF`. Completed sessions stop accumulating and have zero live
 rates. The last 120 completed summaries remain available through `flow-history`.
-The model permits 12 live sessions; manual generation reserves one slot for the
-correlated scenario and background generation targets fewer than five. A
-scenario reserves one slot across its successive sessions; a trigger at full
-capacity is deferred without creating an incident or incrementing its count.
+The model permits 12 live sessions; background generation targets fewer than
+five. Ordinary scenarios reserve one slot across successive sessions; the partial
+variant reserves two for concurrent uploads. A trigger without sufficient capacity
+is deferred without creating an incident or incrementing its count.
 
 Directional session rates measure byte growth over the trailing one simulation
 second, counting time before creation as zero. The throughput card and traffic
@@ -253,7 +253,7 @@ Every observation has an immutable incident ID, evidence ID, timestamp, asset
 IDs, collector ID and (when applicable) session ID. The same session IDs appear
 in `flows` and `flow-history`; the priority row shows its incident ID. At the end,
 the banner clears and live flows disappear, while the last 64 incident summaries
-retain up to 64 timeline records and four scenario sessions each. Ordinary completed
+retain up to 64 timeline records and five scenario sessions each. Ordinary completed
 session history remains limited to 120; an incident's original evidence survives
 that session-history eviction. History is retained only for the running process.
 
@@ -306,8 +306,10 @@ without an action or counter change. `aster.ws1` is the modeled credential on
 scenario sessions; other sessions have no credential unless explicitly assigned
 in the model. Credential revocation therefore does not isolate the endpoint.
 
-A request gets a stable `CT-...-ACT-...` ID. It applies exactly **one simulation
-second after request** and verifies its scope **one second after application**.
+A request gets a stable `CT-...-ACT-...` ID. Ordinary variants apply exactly
+**one simulation second after request** and verify their scope **one second
+after application**. The delayed variant uses five seconds to apply and another
+three seconds to verify.
 `actions`, `incident` and `timeline` preserve phase timestamps and results; the
 banner and live flow row show the same current action status. Completed/denied
 session summaries link the effective action ID. `retry ACTION-ID` or repeating
@@ -327,12 +329,17 @@ An early session-only block verifies that scope while later recurring sessions
 remain possible. Blocking the final upload with no remaining/planned incident
 network activity verifies containment for this scenario. A late session action
 that applies after natural completion reports no matching active transfer and
-leaves the incident unresolved. Verified endpoint/peer/credential policies
-cancel remaining scenario network stages and also deny matching sessions in
-future scenarios; those denied sessions have zero bytes and no live map route.
+leaves the incident unresolved. Endpoint/peer/credential policies deny matching
+sessions in future scenarios; those denied sessions have zero bytes and no live
+map route. Verification checks all related active/planned activity: a policy on
+the primary endpoint cannot cancel an unprotected alternate endpoint. Verified
+containment cancels remaining protected scenario network stages. A naturally
+completed, uncontained bulk transfer remains unresolved evidence even when a
+late policy stops future connections.
 Policies persist for the running process. There is no automatic success script:
-an unchecked scenario still ends unresolved. The banner retires at the normal
-74s scenario boundary, or after outstanding responses settle if requested late.
+an unchecked suspicious scenario still ends unresolved. The banner retires at
+the variant's final boundary (74s ordinary/delayed, 76s partial, 32s benign), or
+after outstanding responses settle if requested late.
 
 Each incident retains at most eight response actions. The 64-record timeline
 covers original scenario evidence plus their response phases. Session-only
@@ -355,6 +362,82 @@ printed upload ID. Return with Esc and resume with `P`; inspect `actions` and
 `flow-history` after two simulation seconds. Compare `isolate endpoint ATH-WS1`
 in a fresh process to see legitimate workstation traffic stop as well.
 
+## Evidence, confidence and response outcomes
+
+Historical severity (`critical`, P1), qualitative confidence, assessment,
+operator disposition and response phase are separate fields. The dashboard's
+status line shows severity/confidence/disposition/response; its assessment card
+and map heading show the hypothesis and evidence reason. `incident` and
+`timeline N` show the full reason at 80×24. Immutable timeline records preserve
+those facts when the observation occurred. Original critical priority survives
+dismissal and containment; it describes the original alert priority.
+
+Confidence starts `limited` on the authentication deviation, becomes
+`supported` with unfamiliar/recurring peer activity, then `strong` with observed
+outbound volume compared with the interactive HTTPS reference profile. These
+labels express evidence support for the hypothesis, not numerical likelihood.
+Encrypted content remains unknown, including after successful containment.
+Confidence changes are proposed by observations and applied through a dedicated
+evidence-delivery hook; neutral response/completion snapshots do not change
+the assessment. This slice delivers evidence immediately; collector buffering
+is a later slice. Stopping a benign transfer does not suppress its later approval
+evidence, so legitimate service disruption can still be recognized.
+
+Select a variant using the same simulation/session/response lifecycle:
+
+| Command | Evidence and modeled outcome |
+| --- | --- |
+| `scenario exfiltration` or `F` | Original 74s scenario; unchecked upload stays unresolved; final-upload block at 49s verifies at 51s |
+| `scenario benign` | Queued replication request raises a generic alert; actual `FRA-BKP>SIN-STORE` BACKUP starts at 2s; at 7s delivered owner approval matches `JOB-FRA-SIN-001`, peer/service and transfer profile |
+| `scenario delayed` | Suspicious activity with 5s application delay and 3s verification window; request at 49s stops at 54s with 20,000,000 originator bytes and verifies at 57s |
+| `scenario partial` | A second real upload from `ATH-ADM` starts at 46s using `aster.admin`; response limited to `ATH-WS1` leaves it active |
+| `scenario seeded` | Choose a variant reproducibly using the startup seed; automatic scheduling uses the same selector |
+
+In the benign case, matching owner approval contradicts the data-removal
+hypothesis, reducing confidence to `low` and changing assessment to `authorized
+transfer`. It does not rewrite the initial alert or stop the legitimate backup.
+Inspect `incident` and `timeline 3`, then enter `dismiss approved JOB-FRA-SIN-001`.
+The disposition becomes `dismissed`, while bytes continue until normal session
+completion at 32s. This is a single modeled scheduled job; daily workload
+schedules are a later slice.
+
+`dismiss [reason]` applies no network policy. Incorrect dismissal of suspicious
+activity leaves later sessions, bytes and stronger observations visible. The
+retained disposition stays dismissed alongside explicit unresolved residual
+risk; it never implies containment. Automatic scheduling makes no operator
+decision. Without dismissal, an authorized lookalike remains unresolved for
+review when its banner retires.
+
+For partial containment, inspect both upload IDs with `response`. Blocking the
+primary upload at 49s stops its bytes at 12,000,000 and verifies that scope at
+51s. The alternate upload has 10,000,000 originator bytes then and continues
+at 16.08 Mb/s. The action phase is `verified`, its outcome is `partial`, and
+incident disposition is `partially contained`. Its flow, route and residual-risk
+explanation remain visible. Verification does not label the alternate asset safe.
+Block or revoke that alternate session to verify full cessation; the first
+partial result stays in the timeline. If it finishes naturally, its historical
+transferred bytes and unresolved risk remain.
+
+Explicit credentials are `aster.ws1` (`ATH-WS1`), `aster.admin` (`ATH-ADM`), and
+`aster.backup` (`FRA-BKP`). Policies apply to these modeled identities. Pause
+freezes variant/response delays, speed scales them, and FPS changes no outcome.
+An active incident makes another scenario trigger idempotent regardless of
+variant. The legacy `G` exercise remains separate until the later drill slice;
+these variant and response APIs are shared for that future exercise.
+
+Run a fixed-seed comparison without sleeps, terminal, or network access:
+
+```bash
+python3 demo_assessment.py
+python3 -m unittest -v test_incident_assessment
+```
+
+It compares benign dismissal, ordinary verified cessation, delayed cessation,
+and actual partial containment while preserving severity and evidence. Fixtures
+also check incorrect dismissal, late responses, atomic two-slot reservation,
+observation delivery, minimum-size dashboard facts, and large advances against
+15/60 FPS partitions.
+
 ## Braille map
 
 The dashboard always uses detailed Braille coastlines inspired by
@@ -374,8 +457,8 @@ regions, resetting the map or toggling borders restarts the timer. This camera
 behavior uses real time and continues while the simulation is paused; it stops
 while the console or drill is open. Scroll or pan to stop the automatic zoom-out.
 
-A correlated scenario is scheduled after 30–90 simulation seconds, and again
-30–90 seconds after the preceding scenario finishes. Its P1 banner, priority
+A seeded correlated variant is scheduled after 30–90 simulation seconds, and
+again 30–90 seconds after the preceding scenario finishes. Its P1 banner, priority
 flow row and map share the same incident and session state. The camera follows
 the aggregate activity marker on the original geographic arc while traffic is
 active. Pause freezes scenario evidence and session bytes; speed changes both,
@@ -443,7 +526,7 @@ If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions
+python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions test_incident_assessment
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.

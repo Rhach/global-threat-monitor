@@ -157,7 +157,7 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(len(app.critical_incident.sessions), 4)
         self.assertEqual(app.critical_incident.sessions[-1].orig_bytes, 10000000)
         app.update(25)
-        self.assertEqual(app.incidents.history[-1].disposition, "unresolved")
+        self.assertEqual(app.incidents.history[-1].disposition, "partially contained")
 
     def test_cancelled_request_has_no_effect_and_remote_invalid_targets_rejected(self):
         app = self.app()

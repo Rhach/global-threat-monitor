@@ -611,7 +611,8 @@ class CyberMonitor:
         self.response_counts[action.kind] += 1
 
     def log_observation(self, observation):
-        self.log(observation.summary(), "warn", "CRIT", "ATH")
+        sensor = self.organization.collectors[observation.collector_id].city[3]
+        self.log(observation.summary(), "warn", "CRIT", sensor)
 
     @property
     def attack_cooldown(self):
@@ -695,9 +696,9 @@ class CyberMonitor:
         self.last_eps = self.total_events - self._sample_events
         self._sample_events = self.total_events
 
-    def start_critical_incident(self):
+    def start_critical_incident(self, variant="exfiltration"):
         existing = self.critical_incident
-        incident = self.incidents.start()
+        incident = self.incidents.start(variant)
         if incident is None:
             self.log("Scenario deferred / all session slots occupied", "warn", "MED")
         elif existing is None:
@@ -743,8 +744,8 @@ class CyberMonitor:
         ]
         if self.critical_incident is not None:
             incident = self.critical_incident
-            cards[0] = ("PRIORITY INCIDENT", "CONTAINED" if incident.contained else "CRITICAL P1",
-                        f"{incident.identifier} / SUSPECTED EXFIL", "success" if incident.contained else "warn")
+            cards[0] = ("ASSESSMENT / P1", incident.assessment,
+                        f"{incident.identifier} / {incident.confidence}", "success" if incident.contained else "warn")
         for i, (title, value, hint, color) in enumerate(cards):
             x = i * (width + 1) // 4
             end = (i + 1) * (width + 1) // 4 - 1
@@ -760,8 +761,7 @@ class CyberMonitor:
         flagged = sum(route.flagged for route in visible_routes)
         if incident:
             route = incident.route
-            self.text(px, py, pw, f"{incident.stage} / {route.src_city[3]} > {route.dst_city[3]} / "
-                      f"{route.connection.identifier} / {incident.identifier}",
+            self.text(px, py, pw, f"Assessment: {incident.assessment} / reason: {incident.confidence_reason}",
                       "success" if incident.contained else "warn")
         else:
             unknown = sum(r.src_city is None or r.dst_city is None for r in visible_routes)
@@ -794,7 +794,7 @@ class CyberMonitor:
         # Routes use a shallow Bezier arc in screen coordinates. Land remains
         # dim while active flow heads carry the brightest color on the map.
         for route in visible_routes:
-            if route.critical or route.src_city is None or route.dst_city is None:
+            if (route.critical and incident and route is incident.route) or route.src_city is None or route.dst_city is None:
                 continue
             if route.session is not None and route.session.rate == 0:
                 continue  # Established but idle; endpoints/row remain visible.
@@ -980,6 +980,9 @@ class CyberMonitor:
                        f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}")
             self.text(1, 1, width - 2, banner.ljust(width - 2),
                       "critical_ok" if incident.contained else "critical")
+            self.text(1, 2, width - 2,
+                      f"Sev {incident.severity} | Conf {incident.confidence} | "
+                      f"Disp {incident.disposition} | Resp {incident.response_phase}", "text")
         else:
             self.text(1, 1, width - 2, "ASTER OPERATIONS / ATH office / FRA data center / SIN cloud / REM users", "muted")
         self.draw_kpis(3)
@@ -1011,7 +1014,8 @@ class CyberMonitor:
                 "flows           Session identity, ports, state, bytes, packets and 1s rates",
                 "sessions        Start DNS, HTTPS, SSH and backup demonstration",
                 "flow-history    Completed session summaries (last 120)",
-                "scenario        Trigger correlated exfiltration scenario (same as F)",
+                "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
+                "dismiss [reason] Keep evidence; does not stop active traffic",
                 "incident        Active or most recent incident facts and session IDs",
                 "timeline [N]    Retained observations; N selects one at small sizes",
                 "incidents       Retained unresolved summaries (last 64)",
@@ -1040,21 +1044,37 @@ class CyberMonitor:
                 f"Processed: {self.total_events:,}; applied policy actions: {self.blocked:,}",
                 f"Response counts: {self.response_counts}",
             ])
-        elif command == "scenario":
-            incident = self.start_critical_incident()
-            self.shell_history.append(incident.summary() if incident else "Scenario deferred: session limit")
+        elif command == "scenario" or command.startswith("scenario "):
+            try:
+                variant = command.split()[1] if len(command.split()) == 2 else "exfiltration"
+                if len(command.split()) > 2:
+                    raise ValueError("Use scenario [exfiltration|benign|delayed|partial|seeded]")
+                incident = self.start_critical_incident(variant)
+                self.shell_history.append(incident.summary() if incident else "Scenario deferred: session limit")
+            except ValueError as error:
+                self.shell_history.append(str(error))
+        elif command == "dismiss" or command.startswith("dismiss "):
+            try:
+                incident = self.incidents.dismiss(cmd.strip()[8:] or "operator dismissal")
+                self.shell_history.extend(incident.detail_lines())
+            except ValueError as error:
+                self.shell_history.append(str(error))
         elif command == "response":
             incident = self.critical_incident
+            source, peer = ((incident.source_id, incident.peer_id) if incident else ("ATH-WS1", "EXT-DXB"))
+            credential = incident.credential_id if incident else "aster.ws1"
             self.shell_history.extend([
-                "Response preview: apply after 1 sim second, verify after another 1s.",
+                ("Response preview: apply after 5 sim seconds, verify after another 3s."
+                 if incident and incident.variant == "delayed" else
+                 "Response preview: apply after 1 sim second, verify after another 1s."),
                 "block session FLOW-ID: this incident flow only; future flows allowed",
-                "block peer ATH-WS1 EXT-DXB: egress to peer, including future flows",
-                "isolate endpoint ATH-WS1: all local endpoint traffic, benign included",
-                "revoke credential aster.ws1: only sessions using this credential",
+                f"block peer {source} {peer}: egress to peer, including future flows",
+                f"isolate endpoint {source}: all local endpoint traffic, benign included",
+                f"revoke credential {credential}: only sessions using this credential",
                 "revoke session FLOW-ID: this incident flow only",
                 "Use the explicit command above to request; cancel ACTION-ID before apply.",
                 "Current incident: " + (incident.identifier if incident else "none"),
-                "Incident flow IDs: " + (", ".join(s.identifier for s in incident.sessions)
+                "Incident flow IDs: " + (", ".join(s.identifier + "@" + s.connection.source_id for s in incident.sessions)
                                         if incident else "none"),
             ])
         elif command == "actions":
