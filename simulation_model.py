@@ -135,8 +135,8 @@ class Session:
                 f"  duration={self.duration:.2f}s orig/resp_bytes={self.orig_bytes}/{self.resp_bytes}",
                 f"  orig/resp_pkts={self.orig_pkts}/{self.resp_pkts} "
                 f"Mb/s={self.orig_rate:.4f}/{self.resp_rate:.4f} (1s window)") + (
-                    (f"  action={self.response_action_id} credential={self.credential_id or 'none'}",)
-                    if self.response_action_id else ())
+                    (f"  action={self.response_action_id or 'none'} credential={self.credential_id or 'none'}",)
+                    if self.response_action_id or self.credential_id else ())
 
 
 class SessionSimulation:

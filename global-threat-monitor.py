@@ -477,7 +477,7 @@ def clamp_speed(value):
 
 class CyberMonitor:
     def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0,
-                 seed=None, initial_auto_follow=True, initial_pinned=False):
+                 seed=None, initial_auto_follow=True, initial_pinned=False, initial_scenario=None):
         theme = initial_theme or load_config().get("theme", "ice")
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
@@ -528,6 +528,8 @@ class CyberMonitor:
         self.borders_visible = False
         self.enable_borders()
         self.enable_coastlines()
+        if initial_scenario:
+            self.start_critical_incident(initial_scenario)
 
     def enable_borders(self):
         try:
@@ -889,7 +891,8 @@ class CyberMonitor:
             title = f"{TITLES[self.map_layer]} / W layer / {incident.assessment}"
         incident_activity = (self.map_layer in ("traffic", "incidents") and incident is not None
                              and incident.disposition != "dismissed" and incident.route.session is not None
-                             and incident.route.rate > 0)
+                             and incident.route.rate > 0 and incident.route.src_city is not None
+                             and incident.route.dst_city is not None)
         px, py, pw, ph = self.panel(x, y, w, h, title)
         visible_routes = [route for route in self.attacks if not route.complete]
         nodes_by_code = layer_nodes(self)
@@ -1095,8 +1098,10 @@ class CyberMonitor:
         for i, route in enumerate(routes[:max(0, ph - 2)]):
             if i + 1 >= ph - 1:
                 break
-            policy = (self.critical_incident.response_status if self.critical_incident.actions else
-                      self.critical_incident.identifier) if route.critical else (
+            linked_incident = self.incidents.find_incident(
+                route.session.incident_id if route.session is not None else getattr(route, "incident_id", ""))
+            policy = (linked_incident.response_status if linked_incident.actions else
+                      linked_incident.identifier) if route.critical and linked_incident else (
                 "REVIEW" if route.flagged else "ALLOW")
             if route.connection is None:
                 context = f"{route.src_city[3]}>{route.dst_city[3]}"
@@ -1109,9 +1114,9 @@ class CyberMonitor:
                     context += "!"
                     assessment = "GAP " + health.state + " / modeled"
             compact_status = ("!" if route.connection and self.collectors.collectors[route.connection.collector_id].state != "healthy" else
-                              "P" if route.critical and self.critical_incident.disposition == "partially contained" else
-                              {"requested": "R", "applied": "A", "verified": "V"}.get(self.critical_incident.response_phase, "?")
-                              if route.critical else "OK" if route.connection and route.connection.expected else "NEW")
+                              "P" if linked_incident and linked_incident.disposition == "partially contained" else
+                              {"requested": "R", "applied": "A", "verified": "V"}.get(linked_incident.response_phase, "?")
+                              if route.critical and linked_incident else "OK" if route.connection and route.connection.expected else "NEW")
             value = (f"{route.kind} {compact_status} {context}" if pw < 40 else
                      f"{context:<22} {route.kind:<6} {route.rate:4.1f} {assessment}")
             if pw >= 58 and route.session is not None:
@@ -1120,7 +1125,7 @@ class CyberMonitor:
                          f"{session.rate:.2f} {session.conn_state} {assessment}")
                 if pw >= 85:
                     value += f" {session.duration:.1f}s {session.orig_bytes}/{session.resp_bytes}B"
-            color = "critical_ok" if route.critical and self.critical_incident.contained else (
+            color = "critical_ok" if route.critical and linked_incident and linked_incident.contained else (
                 "critical" if route.critical else "warn" if route.flagged else "text")
             self.text(px, py + i + 1, pw, value, color)
         if not self.attacks and ph > 2:
@@ -1150,9 +1155,10 @@ class CyberMonitor:
         if self.critical_incident is not None:
             incident = self.critical_incident
             coverage = self.incident_coverage(incident)
-            banner = f" P1 {incident.identifier} / {incident.visible_stage} / "
+            banner = f" P1 {incident.identifier} {incident.family} / {incident.visible_stage} / "
             banner += ("COVERAGE GAP " + coverage if coverage else incident.response_status if incident.actions else
-                       f"{incident.route.src_city[2]} > {incident.route.dst_city[2]}")
+                       f"{incident.route.src_city[2] if incident.route.src_city else 'geography unknown'} > "
+                       f"{incident.route.dst_city[2] if incident.route.dst_city else 'geography unknown'}")
             self.text(1, 1, width - 2, banner.ljust(width - 2),
                       "critical_ok" if incident.contained and not coverage else "critical")
             self.text(1, 2, width - 2,
@@ -1200,7 +1206,8 @@ class CyberMonitor:
                 "events [N]      Filtered occurrence/receipt/lag; N opens full record",
                 "filter key=value... Replace shared site/location/severity/service/incident",
                 "filter clear    Clear all filters; filter alone shows state and counts",
-                "scenario [variant] exfiltration (F), benign, delayed, partial, seeded",
+                "scenario exfiltration (F) | credential-misuse | lateral-movement",
+                "Variants: benign/delayed/partial, credential-benign/lateral-benign, seeded",
                 "dismiss [reason] Keep evidence; does not stop active traffic",
                 "camera [auto on|off|pin|unpin|manual|follow] View behavior",
                 "layer [traffic|incidents|health|density] Show or select map layer",
@@ -1347,7 +1354,7 @@ class CyberMonitor:
             try:
                 variant = command.split()[1] if len(command.split()) == 2 else "exfiltration"
                 if len(command.split()) > 2:
-                    raise ValueError("Use scenario [exfiltration|benign|delayed|partial|seeded]")
+                    raise ValueError("Use scenario VARIANT: " + ", ".join(IncidentSimulation.VARIANTS) + ", seeded")
                 incident = self.start_critical_incident(variant)
                 self.shell_history.append(incident.summary() if incident else "Scenario deferred: session limit")
             except ValueError as error:
@@ -1376,6 +1383,15 @@ class CyberMonitor:
                 "Incident flow IDs: " + (", ".join(s.identifier + "@" + s.connection.source_id for s in incident.sessions)
                                         if incident else "none"),
             ])
+            if incident:
+                self.shell_history.extend(textwrap.wrap(
+                    "Family: " + incident.family + "; commands act on actual network scope; "
+                    "inspect every planned hop/identity; previous successful access cannot be undone.", width=72))
+                for source, peer, credential in dict.fromkeys(p.scope for p in incident.planned_sessions):
+                    self.shell_history.append(f"block peer {source} {peer}; revoke credential {credential}")
+                endpoints = dict.fromkeys(asset for p in incident.planned_sessions for asset in (p.source_id, p.peer_id)
+                                          if self.organization.assets[asset].site_id != "SITE-EXTERNAL")
+                self.shell_history.extend(f"isolate endpoint {asset}: all incoming/outgoing local traffic" for asset in endpoints)
         elif command == "actions":
             incident = self.critical_incident or (self.incidents.history[-1] if self.incidents.history else None)
             if incident and incident.actions:
@@ -1617,6 +1633,8 @@ def main():
     parser.add_argument("--no-auto-follow", action="store_true", help="Start with automatic incident following disabled.")
     parser.add_argument("--pin-map", action="store_true", help="Pin the initial map against automatic camera motion.")
     parser.add_argument("--seed", type=int, help="Reproduce organization peer/service selection.")
+    parser.add_argument("--scenario", choices=IncidentSimulation.VARIANTS + ("seeded",),
+                        help="Start a correlated incident family/variant immediately; F defaults to exfiltration.")
     parser.add_argument("--fps", type=int, choices=range(10, 61), metavar="10-60", default=30,
                         help="Rendering rate. Default: 30. Independent of simulation speed.")
     parser.add_argument("-v", "--version", action="version", version=f"{APP_NAME} v{APP_VERSION}")
@@ -1627,7 +1645,7 @@ def main():
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed,
-                           not args.no_auto_follow, args.pin_map)
+                           not args.no_auto_follow, args.pin_map, args.scenario)
     enable_windows_ansi()
     interval = 1 / args.fps
     last_size = None

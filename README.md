@@ -59,6 +59,8 @@ python global-threat-monitor.py --speed 1.5
 python global-threat-monitor.py --theme ice --fps 30
 python global-threat-monitor.py --fps 15
 python global-threat-monitor.py --theme ice --seed 12
+python global-threat-monitor.py --seed 12 --scenario credential-misuse
+python global-threat-monitor.py --seed 12 --scenario lateral-movement
 python global-threat-monitor.py --sound
 python global-threat-monitor.py --no-sound
 ```
@@ -72,6 +74,7 @@ python global-threat-monitor.py --no-sound
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
 --seed <int>     Reproduce session selection, ports and background schedule
+--scenario <variant> Start exfiltration, credential-misuse, lateral-movement or a lookalike
 --no-auto-follow Start with automatic incident follow disabled
 --pin-map        Pin the initial map against automatic camera motion
 --version        Show version information
@@ -112,6 +115,10 @@ G         Start a containment drill. Press keys to complete; Esc cancels
 ```
 
 In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations. Ctrl+C quits from any view.
+
+Use `scenario credential-misuse` or `scenario lateral-movement` to select those
+families. `scenario credential-benign` and `scenario lateral-benign` select their
+authorization lookalikes. `scenario` and `F` default to exfiltration.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -192,7 +199,9 @@ completion is `SF`. Completed sessions stop accumulating and have zero live
 rates. The last 120 completed summaries remain available through `flow-history`.
 The model permits 12 live sessions; background generation targets fewer than
 five. Ordinary scenarios reserve one slot across successive sessions; the partial
-variant reserves two for concurrent uploads. A trigger without sufficient capacity
+variant reserves two for concurrent uploads, credential variants reserve two for
+overlapping application sessions, and lateral variants reserve three for SSH hops.
+A trigger without sufficient capacity
 is deferred without creating an incident or incrementing its count.
 
 Directional session rates measure byte growth over the trailing one simulation
@@ -355,7 +364,8 @@ late policy stops future connections.
 Policies persist for the running process. There is no automatic success script:
 an unchecked suspicious scenario still ends unresolved. The banner retires at
 the variant's final boundary (74s ordinary/delayed, 76s partial, 32s benign), or
-after outstanding responses settle if requested late.
+30s for credential variants and 198s for lateral variants; it waits for related
+live sessions and outstanding responses to settle if needed.
 
 Each incident retains at most eight response actions. The 64-record timeline
 covers original scenario evidence plus their response phases. Session-only
@@ -407,6 +417,10 @@ Select a variant using the same simulation/session/response lifecycle:
 | `scenario benign` | Queued replication request raises a generic alert; actual `FRA-BKP>SIN-STORE` BACKUP starts at 2s; at 7s delivered owner approval matches `JOB-FRA-SIN-001`, peer/service and transfer profile |
 | `scenario delayed` | Suspicious activity with 5s application delay and 3s verification window; request at 49s stops at 54s with 20,000,000 originator bytes and verifies at 57s |
 | `scenario partial` | A second real upload from `ATH-ADM` starts at 46s using `aster.admin`; response limited to `ATH-WS1` leaves it active |
+| `scenario credential-misuse` | `aster.admin` authenticates from `REM-UNK` and `ATH-WS1` to two application peers; three ordinary HTTPS sessions, no bulk upload |
+| `scenario credential-benign` | Same identity/traffic pattern; matching temporary delegation approval arrives at 20s |
+| `scenario lateral-movement` | Three persistent SSH sessions form a local asset chain from Athens to Frankfurt, Singapore, and a Frankfurt backup asset |
+| `scenario lateral-benign` | Approved SSH maintenance begins at `ATH-ADM`; exact hop/credential/service approval arrives at 22s |
 | `scenario seeded` | Choose a variant reproducibly using the startup seed; automatic scheduling uses the same selector |
 
 In the benign case, matching owner approval contradicts the data-removal
@@ -435,7 +449,9 @@ partial result stays in the timeline. If it finishes naturally, its historical
 transferred bytes and unresolved risk remain.
 
 Explicit credentials are `aster.ws1` (`ATH-WS1`), `aster.admin` (`ATH-ADM`), and
-`aster.backup` (`FRA-BKP`). Policies apply to these modeled identities. Pause
+`aster.backup` (`FRA-BKP`). These assets are configured credential owners;
+modeled credential reuse can originate elsewhere. Revocation matches the actual
+identity on a session, regardless of the source asset. Pause
 freezes variant/response delays, speed scales them, and FPS changes no outcome.
 An active incident makes another scenario trigger idempotent regardless of
 variant. The legacy `G` exercise remains separate until the later drill slice;
@@ -639,12 +655,112 @@ I did not write a single line of code on this. Because burning forests and expen
 
 If you can find anything weird in it, Gemini 3.5 flash (high) injected it. Take it up with Google.
 
+## Correlated scenario families
+
+Startup `--scenario VARIANT` triggers an incident immediately. Console
+`scenario VARIANT` uses the same path; `F` and a bare `scenario` select the
+original exfiltration case. An existing active incident makes any additional
+trigger idempotent. The banner shows the family at 80x24, and `I`, `E`, `O`,
+`incident`, `timeline`, and `response` expose the same asset, session, evidence,
+credential and action identities. `V` retains outcomes after the banner clears.
+
+The three patterns differ in actual traffic and assets:
+
+| Family | Linked network stages (seconds after trigger) | Unchecked completion |
+| --- | --- | --- |
+| Exfiltration | 0 authentication anomaly; 2/16/30 recurring `ATH-WS1>EXT-DXB` HTTPS; 44 outbound bulk upload; 49 unusual measured volume | 74s; four sessions and retained suspected data removal |
+| Credential misuse | 0 identity requests outside configured owner; 2 `REM-UNK>FRA-APP`, 8 `ATH-WS1>SIN-API`, 16 `REM-UNK>SIN-API` all using `aster.admin`; 20 identity correlation | 30s; three baseline HTTPS/TLS application sessions, each 12s, 3,600 out / 720,000 in bytes |
+| Lateral movement | 0 SSH access request; 2 `ATH-WS1>FRA-APP` using `aster.ws1`, 10 `FRA-APP>SIN-API` and 18 `SIN-API>FRA-BKP` using `aster.admin`; 22 hop correlation | 198s; three low-volume SSH/tcp:22 sessions, each 180s, 7,200 out / 18,000 in bytes |
+
+`REM-UNK` is a known local organization asset with unknown geography. Its
+collector is in Frankfurt; that does not locate the asset in Frankfurt. No
+route arc is fabricated for its unknown endpoint. The camera can follow the
+known peer, and other geographically known linked sessions appear normally.
+The incident map layer highlights the union of known related assets across
+all actual sessions, so the lateral chain marks Athens, Frankfurt and Singapore.
+
+Credential evidence consists of modeled authentication outcomes and connection
+metadata, alongside the configured identity owner. HTTPS/TLS content is unknown.
+Lateral evidence consists of accepted SSH network sessions sharing adjacent
+assets and credentials. It supports a suspected lateral access pattern; SSH
+commands, process execution and decrypted payloads are not modeled. Later
+attempts from another asset remain planned unless policies cover their own
+scope; stopping one hop does not establish that credentials on other assets
+are harmless. Terminology is grounded in MITRE's [Valid Accounts
+(T1078)](https://attack.mitre.org/techniques/T1078/), [Lateral Movement
+(TA0008)](https://attack.mitre.org/tactics/TA0008/), and [SSH
+(T1021.004)](https://attack.mitre.org/techniques/T1021/004/). These are vocabulary
+references for the modeled access, not claims of full technique coverage.
+
+`response` previews every planned source/peer and credential plus local endpoint
+isolation choices. Responses use the same requested/applied/verified action
+lifecycle as exfiltration, normally applying after 1 simulation second and
+verifying after another 1 second. Scope determines the outcome:
+
+| Example response | Consequence |
+| --- | --- |
+| Exfiltration: block its last upload at 49s | Only that session remains; stopping it verifies network containment at 51s |
+| Credential: `block peer REM-UNK FRA-APP` at 2s | Stops this pair; the other asset and the later Singapore peer remain outside scope; result is partial |
+| Credential: `revoke credential aster.admin` while the first two sessions are active | Stops this identity across both assets and denies its future uses; unrelated identities continue |
+| Lateral: `isolate endpoint ATH-WS1` at 2s | Stops its SSH session and other local traffic; later `FRA-APP>SIN-API` and `SIN-API>FRA-BKP` attempts remain outside scope |
+| Lateral: isolate `FRA-APP` while first two hops are active | Stops both incident sessions touching that asset; the third hop stays planned |
+| Lateral: `revoke credential aster.admin` at 22s | Stops the last two hops; `aster.ws1` on the first hop remains active, so outcome is partial |
+| Lateral: isolate `ATH-WS1`, then revoke `aster.admin` before natural completion | Both identity scopes are covered, all related traffic stops, and the second action verifies containment |
+
+A verified scope can remain a partial incident outcome. Verification checks all
+related live sessions, all unprotected planned connections and any naturally
+completed uncontained access sessions. Late policies cannot undo earlier
+successful access or finished transfers. All historical bytes, authentications,
+timestamps and prior partial results remain inspectable. New family containment
+means cessation/prevention of the modeled network activity; it does not prove
+that remote commands never occurred. An unrelated identity response records no
+incident effect. The existing `delayed` exfiltration variant retains its 5s/3s
+application/verification delays.
+
+Each family has a plausible authorization lookalike. `scenario benign` confirms
+the existing replication job at 7s. `scenario credential-benign` confirms
+`DELEGATION-001` at 20s for temporary application checks from the exact two
+assets, peers and identity. `scenario lateral-benign` starts its first SSH hop at
+`ATH-ADM` and confirms `MAINT-001` at 22s for the exact maintenance hop plan.
+Approval is compared with actual source/peer/credential/service facts. A mismatch
+keeps the suspected assessment. Matching delivered approval reduces confidence
+to `low` and changes the assessment to authorized activity, preserving original
+critical severity. `dismiss reviewed authorization` leaves legitimate sessions
+running. Early containment still permits later approval evidence to arrive;
+stopped or denied authorized activity remains visible as response disruption.
+
+`scenario seeded` and automatic selection share the seeded eight-variant
+selector. Equal seeds, input actions and simulation-time advances reproduce
+family selection, observations and response outcomes. Pause freezes progression,
+speed scales it, and FPS affects rendering only. Lateral incidents keep their
+banner until the final SSH session finishes at 198s, even though the exfiltration
+case ends at 74s. One active incident is allowed; retention stays bounded to 64
+incidents, 64 timeline records and 8 actions each, with at most 5 related sessions.
+
+Reproduce every family, all benign alternatives, narrow partial actions and
+verified containment without sleeps or network activity:
+
+```bash
+python3 demo_scenario_families.py
+python3 -m unittest -v test_scenario_families
+python3 global-threat-monitor.py --seed 12 --scenario credential-misuse
+python3 global-threat-monitor.py --seed 12 --scenario lateral-movement --speed 4
+```
+
+For manual investigation, start a family, pause with `P`, open `I` and press
+Enter for evidence, then `E` for its sessions. In the console, inspect `response`
+before entering a scoped command; resume with Esc and `P` to see application and
+verification. Start a benign variant after completion and review its delivered
+approval before dismissal. Change families through the console after the current
+incident retires; changing the requested family never deletes an active incident.
+
 ## Development
 
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
 python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions test_incident_assessment test_collectors
+python3 -m unittest discover -v
 ```
 
 The tests replay incremental ANSI output to check for stale characters and exercise resize, pause, console input, and terminal restoration through a pseudo-terminal on macOS and Linux.

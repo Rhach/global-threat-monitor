@@ -6,6 +6,9 @@ import math
 import random
 import textwrap
 
+from scenario_families import (NEW_VARIANTS, connection_plan, family_for,
+                               family_stages, reserved_slots)
+
 
 @dataclass(frozen=True)
 class Observation:
@@ -63,8 +66,11 @@ class CriticalIncident:
         self.identifier = f"CT-{number:03d}"
         self.started_at = started_at
         self.variant = variant
+        self.family = family_for(variant)
+        self.benign_alternative = variant == "benign" or variant.endswith("-benign")
+        self.planned_sessions = connection_plan(variant)
         self.source_id, self.peer_id = route.connection.source_id, route.connection.peer_id
-        self.credential_id = "aster.backup" if variant == "benign" else "aster.ws1"
+        self.credential_id = self.planned_sessions[0].credential_id
         self._severity = "critical"  # Historical priority is never rewritten by outcome.
         self.confidence = "limited"
         self.confidence_reason = "authentication failures exceed the configured baseline; intent unconfirmed"
@@ -86,6 +92,14 @@ class CriticalIncident:
         elif variant == "partial":
             self.STAGES = self.STAGES[:-2] + ((46, "RELATED ENDPOINT"),
                                              (49, "UNUSUAL VOLUME"), (76, "UNRESOLVED"))
+        elif variant in NEW_VARIANTS:
+            self.STAGES = family_stages(variant)
+            self.assessment = ("suspected credential misuse" if self.family == "credential-misuse"
+                               else "suspected lateral movement")
+            self.confidence_reason = ("credential requests from an asset outside its configured owner; approval pending"
+                                      if self.family == "credential-misuse" else
+                                      "queued SSH access across local assets; maintenance approval pending")
+            self.confidence_reasons = deque([self.confidence_reason], maxlen=8)
         self.LIFETIME = self.STAGES[-1][0]
         self.age = 0.0
         self.following = True
@@ -101,6 +115,11 @@ class CriticalIncident:
         self.scheduled_job = ({"job_id": "JOB-FRA-SIN-001", "approved_by": "Platform team",
                                "source_id": "FRA-BKP", "peer_id": "SIN-STORE", "service": "BACKUP",
                                "purpose": "scheduled replication"} if variant == "benign" else None)
+        self.authorization = ({"record_id": "DELEGATION-001" if self.family == "credential-misuse" else "MAINT-001",
+                               "approved_by": "Platform team", "scopes": tuple(p.scope for p in self.planned_sessions),
+                               "services": tuple(p.service for p in self.planned_sessions),
+                               "purpose": "temporary delegated application checks" if self.family == "credential-misuse"
+                               else "approved SSH maintenance access"} if variant.endswith("-benign") else None)
         self.mark_route(route)
 
     def mark_route(self, route):
@@ -108,6 +127,7 @@ class CriticalIncident:
         if route not in self.routes:
             self.routes.append(route)
         route.critical = route.flagged = True
+        route.incident_id = self.identifier
 
     @property
     def contained(self):
@@ -126,13 +146,19 @@ class CriticalIncident:
         active = [s for s in self.sessions if not s.complete]
         if self.confidence == "unobserved":
             return "no delivered evidence; modeled activity is not an available incident assessment"
-        if self.assessment == "authorized transfer":
-            return "authorized legitimate transfer" + (" continues" if active else " completed")
+        if self.assessment.startswith("authorized "):
+            activity = {"authorized transfer": "authorized legitimate transfer",
+                        "authorized credential use": "authorized delegated application access",
+                        "authorized administration": "authorized SSH maintenance access"}[self.assessment]
+            return activity + (" continues" if active else " interrupted by modeled response"
+                               if any(s.state != "completed" for s in self.sessions) else " completed")
         if self.contained:
             return "no residual modeled incident network activity; payload content remains unknown"
         if active:
             return "active related sessions: " + ", ".join(s.identifier for s in active)
-        return "suspected data removal unresolved; future activity may remain" if not self.complete else "historical suspected data removal unresolved"
+        hypothesis = {"exfiltration": "suspected data removal", "credential-misuse": "suspected credential misuse",
+                      "lateral-movement": "suspected lateral movement"}[self.family]
+        return hypothesis + " unresolved; future activity may remain" if not self.complete else "historical " + hypothesis + " unresolved"
 
     @property
     def response_status(self):
@@ -155,7 +181,7 @@ class CriticalIncident:
     def summary(self):
         orig = sum(s.orig_bytes for s in self.sessions)
         resp = sum(s.resp_bytes for s in self.sessions)
-        return (f"{self.identifier} {self.visible_stage} / variant={self.variant} severity={self.severity} "
+        return (f"{self.identifier} {self.visible_stage} / family={self.family} variant={self.variant} severity={self.severity} "
                 f"confidence={self.confidence} assessment={self.assessment} disposition={self.disposition} / "
                 f"{self.source_id}>{self.peer_id} / sessions={len(self.sessions)} / "
                 f"orig/resp_bytes={orig}/{resp} / {self.response_status}")
@@ -164,11 +190,17 @@ class CriticalIncident:
         return tuple(textwrap.wrap(self.summary(), width=72)) + tuple(
             textwrap.wrap("Confidence reason: " + self.confidence_reason, width=72)) + tuple(
             textwrap.wrap("Residual risk: " + self.residual_risk, width=72)) + tuple(
+            textwrap.wrap("Planned network scope: " + "; ".join(
+                f"t+{p.offset:g} {p.source_id}>{p.peer_id} {p.service} credential={p.credential_id}"
+                for p in self.planned_sessions), width=72)) + tuple(
             line for action in self.actions for line in action.detail_lines())
 
     def position(self, progress=None):
         """The same geographic arc drives both camera and activity marker."""
         t = self.route.progress if progress is None else progress
+        if self.route.src_city is None or self.route.dst_city is None:
+            known = self.route.src_city or self.route.dst_city
+            return known[:2] if known else None
         sx, sy = self.route.src_city[:2]
         dx, dy = self.route.dst_city[:2]
         bend = min(12.0, abs(dx - sx) * 0.12)
@@ -255,7 +287,8 @@ class IncidentSimulation:
 
     HISTORY_LIMIT = 64
     ACTION_LIMIT = 8
-    VARIANTS = ("exfiltration", "benign", "delayed", "partial")
+    VARIANTS = ("exfiltration", "credential-misuse", "lateral-movement", "benign",
+                "credential-benign", "lateral-benign", "delayed", "partial")
 
     def __init__(self, simulation, make_route, emit, seed=None,
                  on_completed=None, on_applied=None, submit_observation=None):
@@ -372,17 +405,9 @@ class IncidentSimulation:
         return incident
 
     def unprotected_future(self, incident):
-        remaining = []
-        for offset, _ in incident.STAGES[incident.next_step:]:
-            if offset in (2, 16, 30, 44):
-                target = (incident.source_id, incident.peer_id, incident.credential_id)
-            elif offset == 46 and incident.variant == "partial":
-                target = ("ATH-ADM", incident.peer_id, "aster.admin")
-            else:
-                continue
-            if not any(a.matches_scope(*target) for a in self.simulation.policies.values()):
-                remaining.append(target)
-        return remaining
+        remaining_offsets = {offset for offset, _ in incident.STAGES[incident.next_step:]}
+        return [plan.scope for plan in incident.planned_sessions if plan.offset in remaining_offsets
+                and not any(a.matches_scope(*plan.scope) for a in self.simulation.policies.values())]
 
     def request_response(self, kind, scope, target, peer_id="", action_id=None):
         """Explicit scopes; retries by ID or identical request return the same action."""
@@ -464,13 +489,12 @@ class IncidentSimulation:
                 action.status = "verified" if not matches else "verification failed"
                 residual = [s for s in incident.sessions if not s.complete]
                 future = self.unprotected_future(incident)
-                escaped = [s for s in incident.sessions
-                           if s.profile == "outbound_bulk" and s.state == "completed" and s.orig_bytes]
+                escaped = [s for s in incident.sessions if s.state == "completed" and
+                           (s.orig_bytes or s.resp_bytes) and
+                           (incident.family != "exfiltration" or s.profile == "outbound_bulk")]
                 related_effect = any(s.identifier in action.affected_sessions for s in incident.sessions)
                 protected = action.scope != "session" and any(
-                    action.matches_scope(source, peer, credential) for source, peer, credential in
-                    ((incident.source_id, incident.peer_id, incident.credential_id),
-                     ("ATH-ADM", incident.peer_id, "aster.admin"))[:2 if incident.variant == "partial" else 1])
+                    action.matches_scope(*plan.scope) for plan in incident.planned_sessions)
                 action.covers_incident = (not matches and not residual and not future and not escaped and
                                          (related_effect or protected))
                 if matches:
@@ -482,14 +506,18 @@ class IncidentSimulation:
                     action.outcome = "partial"
                     action.result = ("scope verified; other/future sessions remain outside this scope; " +
                                      ("residual active: " + ", ".join(s.identifier for s in residual) if residual else
-                                      "uncontained completed transfers: " + ", ".join(s.identifier for s in escaped) if escaped else
-                                      "unprotected planned endpoints: " + ", ".join(t[0] for t in future)))
+                                      ("uncontained completed transfers: " if incident.family == "exfiltration" else
+                                       "uncontained completed access sessions: ") + ", ".join(s.identifier for s in escaped) if escaped else
+                                      "unprotected planned endpoints: " + ", ".join(
+                                          f"{source}>{peer} credential={credential}" for source, peer, credential in future)))
                     incident.partial_observed = True
                     if incident.disposition != "dismissed":
                         incident.disposition = "partially contained"
                 else:
                     action.outcome = "no incident effect"
                     action.result = "scope verified; late/no matching active transfer; no action-caused containment"
+                if incident.family != "exfiltration":
+                    action.result += "; network scope only; prior authentications retained; encrypted commands/content unknown"
                 if incident.contained:
                     incident.stage = "CONTAINMENT VERIFIED"
                     if incident.disposition != "dismissed":
@@ -504,15 +532,14 @@ class IncidentSimulation:
             variant = self.variant_rng.choice(self.VARIANTS)
         if variant not in self.VARIANTS:
             raise ValueError("Scenario variants: " + ", ".join(self.VARIANTS) + ", seeded")
-        reservation = 2 if variant == "partial" else 1
+        reservation = reserved_slots(variant)
         if len(self.simulation.sessions) > self.simulation.MAX_ACTIVE - reservation:
             return None
         self.simulation.reserved_slots = reservation
         self.count += 1
-        # Allocate the first flow ID now; no session/bytes exist until NEW PEER.
-        source, peer, service = (("FRA-BKP", "SIN-STORE", "BACKUP") if variant == "benign" else
-                                 ("ATH-WS1", "EXT-DXB", "HTTPS"))
-        connection = self.simulation.organization.connect(source, peer, service)
+        # Allocate the first flow ID now; sessions/bytes begin at the first planned access.
+        first = connection_plan(variant)[0]
+        connection = self.simulation.organization.connect(first.source_id, first.peer_id, first.service)
         route = self.make_route(connection, None)
         self.active = CriticalIncident(route, self.count, self.simulation.now, variant)
         initial_confidence, initial_assessment, initial_reason = (
@@ -523,7 +550,9 @@ class IncidentSimulation:
         self.assess(initial_confidence, initial_assessment, initial_reason)
         revoked = next((a for a in self.simulation.policies.values()
                         if a.scope == "credential" and a.target == self.active.credential_id), None)
-        if variant == "benign":
+        if variant in NEW_VARIANTS:
+            self.initial_family_observation(revoked)
+        elif variant == "benign":
             self.observe("TRANSFER ALERT", "queued job request declares a bulk transfer from FRA-BKP to SIN-STORE; "
                          "generic data-removal alert before execution; ownership/authorization not yet reconciled; "
                          "no bytes measured yet; TLS payload unknown")
@@ -536,13 +565,14 @@ class IncidentSimulation:
                          "configured baseline 0-1 failures per login; credential misuse suspected")
         return self.active
 
-    def start_session(self, bulk=False, secondary=False):
+    def start_session(self, plan=None):
         incident = self.active
+        plan = plan or next(p for p in incident.planned_sessions if
+                            abs(p.offset - (self.simulation.now - incident.started_at)) < 1e-8)
         connection = (incident.route.connection if not incident.sessions else
-                      self.simulation.organization.connect("ATH-ADM" if secondary else incident.source_id,
-                                                           incident.peer_id, "BACKUP" if incident.variant == "benign" else "HTTPS"))
-        session = self.simulation.create(connection, profile="outbound_bulk" if bulk else None,
-                                         reserved=True, credential_id="aster.admin" if secondary else incident.credential_id)
+                      self.simulation.organization.connect(plan.source_id, plan.peer_id, plan.service))
+        session = self.simulation.create(connection, profile=plan.profile,
+                                         reserved=True, credential_id=plan.credential_id)
         if session is None:
             raise RuntimeError("Scenario reservation invariant violated")
         session.incident_id = incident.identifier
@@ -556,6 +586,80 @@ class IncidentSimulation:
             self.observe("POLICY DENIED", f"{session.response_action_id} prevented new session; "
                          "zero transferred bytes", session)
         return session
+
+    def initial_family_observation(self, revoked):
+        incident = self.active
+        if revoked:
+            incident.stage = "AUTH REJECTED"
+            self.observe("AUTH REJECTED", f"{incident.credential_id} request rejected by {revoked.identifier}; "
+                         "credential remains revoked; no successful use")
+        elif incident.family == "credential-misuse":
+            self.observe(incident.stage, "5 rejected identity requests from REM-UNK for aster.admin; "
+                         "configured owner ATH-ADM and baseline 0-1 failures; remote asset geography unknown; "
+                         "delegation approval not yet reconciled; no successful session yet (T1078 hypothesis)")
+        else:
+            self.observe(incident.stage, f"queued SSH access from {incident.source_id} to FRA-APP; "
+                         "ordinary SSH administration originates at ATH-ADM; maintenance approval pending; "
+                         "no session or remote execution observed (TA0008 / T1021.004 hypothesis)")
+
+    def process_family_stage(self, offset):
+        """Connection metadata and explicit authorization, through shared APIs."""
+        incident = self.active
+        plan = next((p for p in incident.planned_sessions if p.offset == offset), None)
+        if plan:
+            session = self.start_session(plan=plan)
+            if session.complete:
+                return
+            owner = self.simulation.organization.credentials[session.credential_id]
+            if incident.family == "credential-misuse":
+                reason = (f"modeled authentication accepts {session.credential_id} from {plan.source_id}; "
+                          f"configured owner {owner}; application scope approval unconfirmed")
+                message = (f"{plan.source_id}>{plan.peer_id} accepts credential {plan.credential_id}; "
+                           f"credential owner {owner}; HTTPS/TLS application session, no bulk upload; "
+                           f"asset geography {'unknown' if self.simulation.organization.city_for(plan.source_id) is None else 'known'}; "
+                           "identity reuse is modeled authentication metadata, TLS content unknown")
+            else:
+                reason = (f"SSH access hop {len(incident.sessions)} {plan.source_id}>{plan.peer_id}; "
+                          "related credential use across local assets outside ordinary SSH relationships; intent unconfirmed")
+                message = (f"hop {len(incident.sessions)}: {plan.source_id}>{plan.peer_id} "
+                           f"SSH/tcp:22 accepts {plan.credential_id} (owner {owner}); "
+                           "persistent low-volume authenticated network access; "
+                           "link to adjacent hop is shared asset/credential metadata; commands and remote execution unknown")
+            self.assess("supported", "suspected " + incident.family.replace("-", " "), reason)
+            self.observe(incident.stage, message, session)
+            return
+        if offset == incident.LIFETIME:
+            self.finish_if_ready()
+            return
+        successful = [s for s in incident.sessions if s.state != "denied"]
+        if incident.authorization:
+            record = incident.authorization
+            actual = tuple((s.connection.source_id, s.connection.peer_id, s.credential_id, s.service)
+                           for s in incident.sessions)
+            approved = tuple(scope + (service,) for scope, service in zip(record["scopes"], record["services"]))
+            if actual == approved:
+                assessment = ("authorized credential use" if incident.family == "credential-misuse" else
+                              "authorized administration")
+                reason = f"{record['approved_by']} confirms {record['record_id']}; exact assets, peers, credentials and services match approval"
+                self.assess("low", assessment, reason)
+                self.observe("AUTHORIZATION MATCH", reason + "; " + record["purpose"] +
+                             "; authorization contradicts misuse hypothesis; original alert retained; "
+                             "encrypted content/commands remain unknown", incident.sessions[-1])
+            else:
+                self.observe("APPROVAL MISMATCH", "authorization does not match actual connection scopes; hypothesis remains unresolved")
+        elif successful:
+            reason = ("same credential accepted from two assets outside its configured owner and two application peers"
+                      if incident.family == "credential-misuse" else
+                      "three linked local SSH hops connect Athens, Frankfurt and Singapore; no approval record matches")
+            if len(successful) != len(incident.planned_sessions):
+                reason = f"{len(successful)} accepted access sessions; other attempts denied by applied policy; intent unconfirmed"
+            self.assess("strong" if len(successful) == 3 else "supported",
+                        "suspected " + incident.family.replace("-", " "), reason)
+            self.observe(incident.stage, reason + "; actual accepted sessions: " +
+                         ", ".join(s.identifier for s in successful) +
+                         "; no bulk transfer or decrypted command evidence", successful[-1])
+        else:
+            self.observe("ACCESS PREVENTED", "all planned access denied by existing policies; no successful authentication/session activity observed")
 
     def completed_session(self, session):
         if self.active and session.incident_id == self.active.identifier:
@@ -582,8 +686,11 @@ class IncidentSimulation:
         if not incident.contained:
             incident.stage = stage
         incident.next_step += 1
-        if incident.contained and offset != incident.LIFETIME and incident.variant != "benign":
+        if incident.contained and offset != incident.LIFETIME and not incident.benign_alternative:
             return  # Verified broad policy cancels remaining scenario network stages.
+        if incident.variant in NEW_VARIANTS:
+            self.process_family_stage(offset)
+            return
         if incident.variant == "benign":
             if offset == 2:
                 session = self.start_session()
@@ -618,13 +725,13 @@ class IncidentSimulation:
             self.observe(incident.stage, f"HTTPS connection {len(incident.sessions)} to same peer; "
                          "14s start intervals; recurrence observed, intent unconfirmed", session)
         elif offset == 44:
-            session = self.start_session(bulk=True)
+            session = self.start_session()
             if session.complete:
                 return
             self.observe(incident.stage, "HTTPS/TLS outbound upload started to same unfamiliar peer; "
                          "payload unavailable; suspected data removal (TA0010)", session)
         elif offset == 46:
-            session = self.start_session(bulk=True, secondary=True)
+            session = self.start_session()
             if not session.complete:
                 self.assess("supported", "suspected exfiltration", "related ATH-ADM upload uses same unfamiliar peer; a second local endpoint remains in scope")
                 self.observe(incident.stage, "ATH-ADM starts related HTTPS/TLS upload to same peer using aster.admin; "
@@ -647,8 +754,9 @@ class IncidentSimulation:
 
     def finish_if_ready(self):
         incident = self.active
-        if any(a.status in ("requested", "applied") for a in incident.actions):
-            return  # Final scenario boundary consumed; only response boundaries remain.
+        if any(not s.complete for s in incident.sessions) or any(
+                a.status in ("requested", "applied") for a in incident.actions):
+            return  # Final stage consumed; session completion/response boundaries still advance.
         if incident.disposition != "dismissed":
             incident.disposition = ("contained" if incident.contained else
                                     "partially contained" if incident.partial_observed else "unresolved")
