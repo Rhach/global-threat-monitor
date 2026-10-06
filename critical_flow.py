@@ -1,10 +1,12 @@
 """Correlated offline observations, retained incidents and geographic follow."""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import random
 import textwrap
+
+from operating_presets import OperatingPresets
 
 from scenario_families import (NEW_VARIANTS, connection_plan, family_for,
                                family_stages, reserved_slots)
@@ -61,11 +63,13 @@ class CriticalIncident:
               (74, "UNRESOLVED"))
     LIFETIME = 74.0
 
-    def __init__(self, route, number, started_at=0.0, variant="exfiltration"):
+    def __init__(self, route, number, started_at=0.0, variant="exfiltration", timing_scale=1.0, preset="operations"):
         self.route = route
         self.identifier = f"CT-{number:03d}"
         self.started_at = started_at
         self.variant = variant
+        self.timing_scale = timing_scale
+        self.preset = preset
         self.family = family_for(variant)
         self.benign_alternative = variant == "benign" or variant.endswith("-benign")
         self.planned_sessions = connection_plan(variant)
@@ -100,6 +104,10 @@ class CriticalIncident:
                                       if self.family == "credential-misuse" else
                                       "queued SSH access across local assets; maintenance approval pending")
             self.confidence_reasons = deque([self.confidence_reason], maxlen=8)
+        self.canonical_stages = self.STAGES
+        self.STAGES = tuple((round(offset * timing_scale, 12), stage) for offset, stage in self.canonical_stages)
+        self.planned_sessions = tuple(replace(plan, offset=round(plan.offset * timing_scale, 12))
+                                      for plan in self.planned_sessions)
         self.LIFETIME = self.STAGES[-1][0]
         self.age = 0.0
         self.following = True
@@ -182,7 +190,7 @@ class CriticalIncident:
         orig = sum(s.orig_bytes for s in self.sessions)
         resp = sum(s.resp_bytes for s in self.sessions)
         return (f"{self.identifier} {self.visible_stage} / family={self.family} variant={self.variant} severity={self.severity} "
-                f"confidence={self.confidence} assessment={self.assessment} disposition={self.disposition} / "
+                f"preset={self.preset} timing=x{self.timing_scale:g} confidence={self.confidence} assessment={self.assessment} disposition={self.disposition} / "
                 f"{self.source_id}>{self.peer_id} / sessions={len(self.sessions)} / "
                 f"orig/resp_bytes={orig}/{resp} / {self.response_status}")
 
@@ -291,7 +299,7 @@ class IncidentSimulation:
                 "credential-benign", "lateral-benign", "delayed", "partial")
 
     def __init__(self, simulation, make_route, emit, seed=None,
-                 on_completed=None, on_applied=None, submit_observation=None):
+                 on_completed=None, on_applied=None, submit_observation=None, preset="operations"):
         self.simulation = simulation
         self.make_route = make_route
         self.emit = emit
@@ -300,13 +308,22 @@ class IncidentSimulation:
         self.active = None
         self.history = deque(maxlen=self.HISTORY_LIMIT)
         self.count = 0
-        self.next_start = self.rng.uniform(30, 90)
+        self.pacing = OperatingPresets(seed=seed, name=preset)
+        self.force_next = False  # Explicit compatibility fixture override; UI uses presets.
+        self.next_start = self.pacing.delay()
         self.automatic = True
         self.on_completed = on_completed
         self.on_applied = on_applied
         self._next_assessment = None
         self.submit_observation = submit_observation
         self.delivery_errors = deque(maxlen=64)
+
+    def set_preset(self, name):
+        if name == self.pacing.name:
+            return
+        self.pacing.set(name)
+        self.force_next = False
+        self.next_start = self.simulation.now + self.pacing.delay()
 
     def next_boundary(self):
         if self.active:
@@ -447,8 +464,8 @@ class IncidentSimulation:
         action = ResponseAction(f"{incident.identifier}-ACT-{len(incident.actions) + 1:02d}",
                                 incident.identifier, kind, scope, target, peer_id,
                                 self.simulation.now,
-                                apply_delay=5.0 if incident.variant == "delayed" else 1.0,
-                                verify_delay=3.0 if incident.variant == "delayed" else 1.0)
+                                apply_delay=round((5.0 if incident.variant == "delayed" else 1.0) * incident.timing_scale, 12),
+                                verify_delay=round((3.0 if incident.variant == "delayed" else 1.0) * incident.timing_scale, 12))
         incident.actions.append(action)
         self.observe("RESPONSE REQUESTED", f"{action.identifier} {kind}: {scope}={target}" +
                      (f">{peer_id}" if peer_id else "") +
@@ -541,7 +558,8 @@ class IncidentSimulation:
         first = connection_plan(variant)[0]
         connection = self.simulation.organization.connect(first.source_id, first.peer_id, first.service)
         route = self.make_route(connection, None)
-        self.active = CriticalIncident(route, self.count, self.simulation.now, variant)
+        self.active = CriticalIncident(route, self.count, self.simulation.now, variant,
+                                       timing_scale=self.pacing.timing_scale, preset=self.pacing.name)
         initial_confidence, initial_assessment, initial_reason = (
             self.active.confidence, self.active.assessment, self.active.confidence_reason)
         self.active.confidence, self.active.assessment = "unobserved", "awaiting evidence"
@@ -572,7 +590,8 @@ class IncidentSimulation:
         connection = (incident.route.connection if not incident.sessions else
                       self.simulation.organization.connect(plan.source_id, plan.peer_id, plan.service))
         session = self.simulation.create(connection, profile=plan.profile,
-                                         reserved=True, credential_id=plan.credential_id)
+                                         reserved=True, credential_id=plan.credential_id,
+                                         timing_scale=incident.timing_scale)
         if session is None:
             raise RuntimeError("Scenario reservation invariant violated")
         session.incident_id = incident.identifier
@@ -671,8 +690,14 @@ class IncidentSimulation:
         now = self.simulation.now
         if self.active is None:
             if self.automatic and now + 1e-9 >= self.next_start:
-                if self.start("seeded") is None:
-                    self.next_start = now + 1.0  # Retry without half-created evidence.
+                variant = "seeded" if self.force_next else self.pacing.candidate(now)
+                if variant is None:
+                    self.next_start = now + self.pacing.OPERATIONS_CHECK
+                elif self.start(variant) is None:
+                    self.next_start = now + 1.0  # Capacity deferral retains the showcase candidate.
+                else:
+                    self.force_next = False
+                    self.pacing.issued()
             return
         incident = self.active
         incident.age = now - incident.started_at
@@ -682,20 +707,21 @@ class IncidentSimulation:
             return
         if now + 1e-9 < incident.next_boundary:
             return
-        offset, stage = incident.STAGES[incident.next_step]
+        actual_offset, stage = incident.STAGES[incident.next_step]
+        offset = incident.canonical_stages[incident.next_step][0]
         if not incident.contained:
             incident.stage = stage
         incident.next_step += 1
-        if incident.contained and offset != incident.LIFETIME and not incident.benign_alternative:
+        if incident.contained and actual_offset != incident.LIFETIME and not incident.benign_alternative:
             return  # Verified broad policy cancels remaining scenario network stages.
         if incident.variant in NEW_VARIANTS:
-            self.process_family_stage(offset)
+            self.process_family_stage(actual_offset)
             return
         if incident.variant == "benign":
             if offset == 2:
                 session = self.start_session()
                 if not session.complete:
-                    self.observe(incident.stage, "30s BACKUP/TLS upload; modeled job identity awaiting owner confirmation; "
+                    self.observe(incident.stage, f"{session.lifetime:g}s BACKUP/TLS upload; modeled job identity awaiting owner confirmation; "
                                  "content unknown", session)
             elif offset == 7:
                 session = incident.sessions[0]
@@ -721,9 +747,9 @@ class IncidentSimulation:
             session = self.start_session()
             if session.complete:
                 return
-            self.assess("supported", "suspected exfiltration", "recurring HTTPS sessions to the same unfamiliar peer at 14s intervals; intent unconfirmed")
+            self.assess("supported", "suspected exfiltration", f"recurring HTTPS sessions to the same unfamiliar peer at {14 * incident.timing_scale:g}s intervals; intent unconfirmed")
             self.observe(incident.stage, f"HTTPS connection {len(incident.sessions)} to same peer; "
-                         "14s start intervals; recurrence observed, intent unconfirmed", session)
+                         f"{14 * incident.timing_scale:g}s start intervals; recurrence observed, intent unconfirmed", session)
         elif offset == 44:
             session = self.start_session()
             if session.complete:
@@ -747,7 +773,7 @@ class IncidentSimulation:
                 return
             self.assess("strong", "suspected exfiltration", f"{session.connection.source_id} outbound bytes greatly exceed reference interactive HTTPS volume; encrypted content unknown")
             self.observe(incident.stage, f"{session.orig_bytes:,} originator bytes since upload start; "
-                         "reference interactive HTTPS profile: 3,600 originator bytes per 12s session; "
+                         f"reference interactive HTTPS profile: 3,600 originator bytes per {12 * incident.timing_scale:g}s session; "
                          f"content unknown; session {session.state}", session)
         else:
             self.finish_if_ready()
@@ -766,4 +792,4 @@ class IncidentSimulation:
         self.history.append(incident)
         self.active = None
         self.simulation.reserved_slots = 0
-        self.next_start = self.simulation.now + self.rng.uniform(30, 90)
+        self.next_start = self.simulation.now + self.pacing.delay()

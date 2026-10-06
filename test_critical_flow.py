@@ -89,7 +89,7 @@ class CriticalFlowTests(unittest.TestCase):
         for fps, app in zip((15, 60), apps[1:]):
             for _ in range(240 * fps):
                 app.update(1 / fps)
-        self.assertGreater(apps[0].incident_count, 1)
+        self.assertEqual(apps[0].incident_count, 1)  # Forced first scenario; operations then has a long quiet cooldown.
         self.assertEqual(self.snapshot(apps[0]), self.snapshot(apps[1]))
         self.assertEqual(self.snapshot(apps[0]), self.snapshot(apps[2]))
 
@@ -134,7 +134,7 @@ class CriticalFlowTests(unittest.TestCase):
         for speed in (0.25, 4):
             app = self.make_app(speed)
             app.incidents.automatic = True
-            self.assertTrue(30 <= app.critical_cooldown <= 90)
+            self.assertTrue(900 <= app.critical_cooldown <= 1200)
             app.critical_cooldown = 30
             app.update(29 / speed)
             self.assertIsNone(app.critical_incident)
@@ -243,7 +243,8 @@ class CriticalFlowTests(unittest.TestCase):
         self.assertIn("5 failed logins", "\n".join(lines))
         app.process_shell_command("timeline 0")
         self.assertIn("Use timeline N", app.shell_history[-1])
-        app.update(200)  # Disabled schedule is now in the past.
+        app.critical_cooldown = 30  # Explicit fixture request, independent of operations opportunities.
+        app.update(200)  # Disabled requested schedule is now in the past.
         app.incidents.automatic = True
         now = app.simulation.now
         app.update(0.5)

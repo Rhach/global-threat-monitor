@@ -18,8 +18,11 @@ Version 4 replaces the flashing Hollywood panels with a calmer operations displa
 - Traffic history, detection counts, and an active-flow table
 - Persistent fictional sites/assets, expected communication patterns, and separate city collectors
 - DNS exchanges, bursty HTTPS, persistent SSH and bulk backup sessions with directional accounting
-- Correlated critical incidents, grounded confidence, benign lookalikes, and scoped response
+- Correlated exfiltration, credential-misuse and lateral-movement incidents with grounded confidence and scoped response
+- Calm operations or compressed showcase pacing, seeded family rotation and reproducible UTC starts
+- Site-local daily rhythms, approved backup jobs and planned collector maintenance
 - Keyboard investigation, retained incident outcomes, and combined structured filters
+- Traffic, incident, sensor-health and recent-density map layers; manual/follow/pinned camera control
 - Interactive simulation console with `status`, `flows`, and `help` commands
 - Reproducible decision exercises with inspection and real policy/service consequences (`G`)
 - Four color themes with a persisted selection
@@ -59,6 +62,7 @@ python global-threat-monitor.py --speed 1.5
 python global-threat-monitor.py --theme ice --fps 30
 python global-threat-monitor.py --fps 15
 python global-threat-monitor.py --theme ice --seed 12
+python global-threat-monitor.py --preset showcase --seed 12
 python global-threat-monitor.py --seed 12 --scenario credential-misuse
 python global-threat-monitor.py --seed 12 --scenario lateral-movement
 python global-threat-monitor.py --sound
@@ -73,7 +77,8 @@ python global-threat-monitor.py --no-sound
 --no-sound       Mute sound chimes
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
---seed <int>     Reproduce sessions/schedules; starts at 2026-01-01 UTC
+--preset <name>  operations (default) or showcase; also switch in the console
+--seed <int>     Reproduce sessions, scenarios and schedules; starts at 2026-01-01 UTC
 --start-utc <UTC> ISO UTC timestamp or epoch seconds for the simulation start
 --scenario <variant> Start exfiltration, credential-misuse, lateral-movement or a lookalike
 --no-auto-follow Start with automatic incident follow disabled
@@ -109,17 +114,19 @@ V         Open retained incident archive; in flow/incident lists toggle active/a
 O         Open received-event history with occurrence, receipt and lag
 /         Edit combined key=value filters during inspection (Enter applies)
 X         Clear investigation filters (dashboard or inspection)
-C         Open simulation console. Esc returns to the dashboard
+C         Open console; preset operations|showcase selects pacing. Esc returns
 G         Start a decision exercise; inspect, preview a scope, Enter confirms
 + / =     Increase speed
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `drill [exfiltration|benign|partial]`, `schedules [on|off]`, `jobs`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations; `nuke-gibson` starts the default decision exercise. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `preset [operations|showcase]`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `drill [exfiltration|benign|partial]`, `schedules [on|off]`, `jobs`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations; `nuke-gibson` starts the default decision exercise. Ctrl+C quits from any view.
 
 Use `scenario credential-misuse` or `scenario lateral-movement` to select those
 families. `scenario credential-benign` and `scenario lateral-benign` select their
-authorization lookalikes. `scenario` and `F` default to exfiltration.
+authorization lookalikes. `scenario` and `F` default to exfiltration and capture
+the selected preset's timing. `G` exercises keep their fixed full-length training
+timelines in both dashboard presets.
 
 `--speed` changes the simulation clock, traffic, and telemetry cadence. `--fps` changes only the redraw rate. Pausing freezes the simulation, including the displayed clock.
 
@@ -257,7 +264,9 @@ session and incident progression unless paused.
 ## Correlated incident and retained evidence
 
 The first scenario follows `ATH-WS1` and `EXT-DXB` through these observations.
-Times below are simulation seconds relative to its start:
+Times below are operations-preset simulation seconds relative to its start.
+Showcase incident times and related session/response durations multiply by 0.1;
+profile byte totals and the meaning of evidence remain the same:
 
 | Time | Observation and actual session behavior |
 | --- | --- |
@@ -302,8 +311,8 @@ python3 -m unittest -v test_critical_flow
 
 The demo reconciles 62,470,800 payload bytes across the three ordinary HTTPS
 sessions and upload; it retains 11 observations and reports zero containments.
-Fixtures compare one 240s advance with 15/60 FPS partitions including scheduled
-scenarios and background sessions, and check pause, speed, capacity reservation,
+Fixtures compare one 240s advance with 15/60 FPS partitions including an
+explicitly scheduled scenario and background sessions, and check pause, speed, capacity reservation,
 idle map markers, retained evidence, manual camera override and incremental
 rendering at multiple terminal sizes.
 
@@ -593,9 +602,10 @@ regions, resetting the map or toggling borders restarts the timer. This camera
 behavior uses real time and continues while the simulation is paused; pinning
 stops it. It also stops while the console, investigation or drill is open. Scroll or pan to stop the automatic zoom-out.
 
-A seeded correlated variant is scheduled after 30–90 simulation seconds, and
-again 30–90 seconds after the preceding scenario finishes. Its P1 banner, priority
-flow row and map share the same incident and session state. Automatic follow is
+Operations allows workload-based incident opportunities after long quiet periods;
+showcase rotates all three families with 5–10s gaps and compressed timelines.
+The selected preset is visible beside the schedule or P1 banner. The P1 banner,
+priority flow row and map share the same incident and session state. Automatic follow is
 on by default and can be disabled with `Y` or `--no-auto-follow`. An unpinned
 following camera tracks the aggregate activity marker on the original geographic arc while traffic is
 active. Pause freezes scenario evidence and session bytes; speed changes both,
@@ -764,7 +774,6 @@ incident retires; changing the requested family never deletes an active incident
 Run the rendering, timing, and keyboard checks with:
 
 ```bash
-python3 -m unittest -v test_monitor test_terminal_map test_terminal_input test_critical_flow test_simulation_model test_session_simulation test_response_actions test_incident_assessment test_collectors
 python3 -m unittest discover -v
 ```
 
@@ -1221,3 +1230,97 @@ through a full UTC day with two backups and three collector windows; it takes
 CPU time to integrate the one-second payload and heartbeat buckets. Fixed-clock fixtures also check
 pause/speed, update/render partition invariance, bounded job history, deferred
 and missed jobs, retained context, and repeated daily maintenance recovery.
+
+
+## Operations and showcase presets
+
+Start with `--preset operations` (the default) or `--preset showcase`. In the
+console, `preset operations` and `preset showcase` select future pacing;
+`preset` prints the selected preset, next scheduler check and last actual
+calendar workload. The dashboard and console display the selected preset.
+All modes share the same organization, UTC clock, calendar, session/evidence
+APIs, policies, collectors, map layers and investigation history.
+
+Operations starts with a seeded 15–20 minute quiet interval and uses that same
+interval after an incident finishes. After it elapses, the scheduler checks at
+five-minute intervals. A check creates an opportunity only when a real scheduled
+morning, work or backup session was created within the previous 60 simulation
+seconds and a seeded 25% chance succeeds. An attempted spawn that fails capacity,
+a denied session, a redraw or a system notice is not a workload opportunity.
+Quiet periods with no recent activity produce no automatic incident. Workload
+establishes a scheduling opportunity; it does not prove that the calendar flow
+is malicious. Incident evidence still comes from the incident's actual modeled
+authentication/session observations. Manual `F`/`scenario` triggers remain
+available during quiet periods.
+
+Showcase uses 5–10 simulation seconds before its first incident and between
+finished incidents. A finite seeded shuffle bag includes each of exfiltration,
+credential misuse and lateral movement once per three-incident cycle. One entry
+in each cycle is its benign authorization alternative; the other two are
+suspicious variants. Exfiltration can also use its delayed or partial variant.
+Every family completes within **90 simulation seconds** after entering showcase
+from an idle world, or from completion of an incident already active at entry,
+under normal session capacity and unchecked, uninterrupted automatic progression. Entering
+showcase resets only the future three-family cycle. There is one active incident;
+the next starts after all its modeled sessions and pending response actions end.
+Manually filling the twelve-session capacity, extra manually triggered incidents,
+or extending the active response window can defer the advertised interval.
+Capacity deferrals retain the pending family/variant and retry without creating
+an incident or consuming its bag entry. A repeated selection of the current
+preset changes no scheduler deadline or future bag.
+
+Each incident captures its preset and timing scale when it starts. Operations
+uses full timings; showcase uses 0.1 times the stage offsets, planned access
+offsets, session segments/lifetimes and response application/verification delays.
+Payload rates multiply by ten, preserving the directional bytes and packets of
+a fully completed profile. For example, the ordinary exfiltration upload starts
+at 44s and its volume observation arrives at 49s; showcase uses 4.4s and 4.9s.
+Both observe 10,000,000 outgoing bytes. Blocking that session at the observation
+applies at 50s/5.0s and verifies at 51s/5.1s, preserving 12,000,000 outgoing bytes.
+Delayed responses use 5s/3s in operations and 0.5s/0.3s in showcase. The 198s
+lateral incident completes its three actual SSH sessions in 19.8s in showcase.
+Prior completed access stays historical evidence; a late action cannot undo it.
+
+Throughput and collector payload rates still use complete one-second simulation
+buckets, including short sessions that ended during that bucket. Session rates
+still use the trailing one-second window. Compressed incidents can therefore
+produce larger bursts. Collector heartbeat, buffering and recovery retain their
+normal shared-clock timing; a fast incident can finish before delayed evidence
+arrives, and that coverage gap remains explicit. Calendar sessions and scheduled
+daily backup jobs retain their usual durations and local times in both presets;
+showcase does not compress a day or invent a second clock. `A` and `sessions`
+remain ordinary service-profile demonstrations. Decision drills retain their
+fixed full-length training timing and restore the dashboard preset on return.
+
+Switching presets preserves the active incident, every session, observation,
+response delay/action, retained outcome, and persistent policy. Its captured
+timing continues unchanged; the next incident uses the newly selected preset.
+`incident` and `preset` show the active incident's captured timing when it differs
+from the current selection. Pause freezes both modes, speed scales elapsed
+simulation time, and FPS/rendering/camera motion changes no modeled outcome.
+With the same seed, UTC start, elapsed simulation time and input actions, scenario
+selection, traffic and response outcomes reproduce.
+
+For a manual comparison, start both commands below with the same seed. Operations
+has real Singapore morning activity without a guaranteed early P1. Showcase
+shows three family outcomes within 90 simulation seconds (90 seconds at speed1,
+22.5 at speed4). Use `P`, `I`/`V`, `E` and `O` to inspect evidence, sessions and
+received history. Enter `C`, `response` to inspect scopes; apply a scoped command
+while paused, then resume. Switch with `preset operations` or `preset showcase`
+and inspect `incident` to confirm the active timeline stayed intact.
+
+```bash
+python3 global-threat-monitor.py --seed 12 --preset operations
+python3 global-threat-monitor.py --seed 12 --preset showcase --speed 4
+python3 demo_presets.py
+python3 -m unittest -v test_operating_presets
+python3 -m unittest discover -v
+```
+
+The offline demo advances both presets through the same 90s UTC interval, prints
+showcase family/variant outcomes and compares the same scoped exfiltration
+containment at full and compressed timing. Fixtures cover long quiet stretches,
+actual-work/chance gating, all eight variants' preserved profile integrals,
+three-family bounds, no overlapping active state, capacity deferral, benign
+approval, late access, idempotent actions, preset switches with pending actions,
+pause/speed, seeded 15/60 FPS partitions, retained history and the 80×24 display.

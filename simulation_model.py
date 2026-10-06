@@ -38,7 +38,7 @@ class Session:
         "BACKUP": ("tcp", 443, "TLS", 30.0, ((0, 30, 2000000, 10000),)),
     }
 
-    def __init__(self, connection, started_at=0.0, orig_port=49152, profile=None):
+    def __init__(self, connection, started_at=0.0, orig_port=49152, profile=None, timing_scale=1.0):
         self.connection = connection
         self.identifier = connection.identifier
         self.service = connection.service
@@ -58,6 +58,14 @@ class Session:
             # HTTPS remains the application service; TLS is encryption only.
             self.lifetime = 30.0
             self.segments = ((0, 30, 2000000, 10000),)
+        if not isinstance(timing_scale, (int, float)) or not math.isfinite(timing_scale) or not 0 < timing_scale <= 1:
+            raise ValueError("Session timing scale must be finite and between zero and one")
+        self.timing_scale = timing_scale
+        if timing_scale != 1:
+            self.lifetime = round(self.lifetime * timing_scale, 12)
+            self.segments = tuple((round(start * timing_scale, 12), round(end * timing_scale, 12),
+                                   orig / timing_scale, resp / timing_scale)
+                                  for start, end, orig, resp in self.segments)
         self.orig_port = orig_port
         self.started_at = started_at
         self.now = started_at
@@ -86,9 +94,11 @@ class Session:
         return self.orig_rate + self.resp_rate
 
     def totals_at(self, now):
-        age = max(0.0, min(now - self.started_at, self.lifetime))
+        age = max(0.0, min(round(now - self.started_at, 12), self.lifetime))
+        if now + 1e-9 >= self.started_at + self.lifetime:
+            age = self.lifetime
         if self.stopped_at is not None:
-            age = min(age, self.stopped_at - self.started_at)
+            age = min(age, round(self.stopped_at - self.started_at, 12))
         values = [0.0, 0.0, 0.0, 0.0]
         for start, end, orig, resp in self.segments:
             seconds = max(0.0, min(age, end) - start)
@@ -176,11 +186,11 @@ class SessionSimulation:
         # Session-only responses need no retained policy: flow IDs never recur.
         self.policies = {}
 
-    def create(self, connection=None, profile=None, reserved=False, credential_id=None):
+    def create(self, connection=None, profile=None, reserved=False, credential_id=None, timing_scale=1.0):
         if len(self.sessions) >= self.MAX_ACTIVE - (0 if reserved else self.reserved_slots):
             return None
         connection = connection or self.organization.choose_connection()
-        session = Session(connection, self.now, self.rng.randint(49152, 65535), profile)
+        session = Session(connection, self.now, self.rng.randint(49152, 65535), profile, timing_scale)
         session.credential_id = credential_id
         policy = next((action for action in self.policies.values() if action.matches(session)), None)
         if policy:

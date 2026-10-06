@@ -26,6 +26,7 @@ from investigation import Investigation
 from decision_drill import DecisionDrill
 from investigation_catalog import EventCatalog, EventRecord, LogPayload
 from simulation_model import Organization, SessionSimulation, valid_advance
+from operating_presets import OperatingPresets
 from workload_schedules import WorkloadSchedules, SEEDED_START_UTC, parse_start_utc, utc_text
 
 APP_NAME = "Global Threat Monitor"
@@ -479,7 +480,7 @@ def clamp_speed(value):
 
 class CyberMonitor:
     def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0,
-                 seed=None, initial_auto_follow=True, initial_pinned=False, initial_scenario=None, start_utc=None):
+                 seed=None, initial_auto_follow=True, initial_pinned=False, initial_scenario=None, start_utc=None, initial_preset="operations"):
         theme = initial_theme or load_config().get("theme", "ice")
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
@@ -509,7 +510,7 @@ class CyberMonitor:
                                              self.log_observation, seed=seed,
                                              on_completed=self.complete_session,
                                              on_applied=self.response_applied,
-                                             submit_observation=self.submit_observation)
+                                             submit_observation=self.submit_observation, preset=initial_preset)
         self.threat_logs = deque(maxlen=80)
         self.event_catalog = EventCatalog()
         self.shell_history = deque(maxlen=100)
@@ -525,7 +526,7 @@ class CyberMonitor:
         self.response_counts = {"block": 0, "isolate": 0, "revoke": 0}
         self.rule_hits = [0, 0, 0, 0]
         self.schedules = WorkloadSchedules(self.simulation, self.collectors, self.clock_base,
-                                           self.add_session_route, self.log_schedule, seed=seed)
+                                           self.add_scheduled_session, self.log_schedule, seed=seed)
         self.last_eps = 0
         audio.muted = not initial_sound
         self.log("Offline simulation ready / session payload traffic; no background aggregate")
@@ -658,6 +659,7 @@ class CyberMonitor:
     @critical_cooldown.setter
     def critical_cooldown(self, value):
         self.incidents.next_start = self.simulation.now + max(0.0, value)
+        self.incidents.force_next = True
 
     def incident_route(self, connection, session):
         route = AttackVector(self.organization.city_for(connection.source_id),
@@ -735,6 +737,14 @@ class CyberMonitor:
         self.incidents.process_boundary()
         self.schedules.process_boundary()
         self.sync_incident_camera()
+
+    @property
+    def preset(self):
+        return self.incidents.pacing.name
+
+    def add_scheduled_session(self, session):
+        self.incidents.pacing.note_workload(session)
+        return self.add_session_route(session)
 
     def log_schedule(self, message):
         self.log(message, kind="schedule")
@@ -1172,7 +1182,7 @@ class CyberMonitor:
         if self.critical_incident is not None:
             incident = self.critical_incident
             coverage = self.incident_coverage(incident)
-            banner = f" P1 {incident.identifier} {incident.family} / {incident.visible_stage} / "
+            banner = f" {self.preset.upper()} P1 {incident.identifier} {incident.family} / {incident.visible_stage} / "
             banner += ("COVERAGE GAP " + coverage if coverage else incident.response_status if incident.actions else
                        f"{incident.route.src_city[2] if incident.route.src_city else 'geography unknown'} > "
                        f"{incident.route.dst_city[2] if incident.route.dst_city else 'geography unknown'}")
@@ -1182,9 +1192,9 @@ class CyberMonitor:
                       f"Sev {incident.severity} | Conf {incident.confidence} | "
                       f"Disp {incident.disposition} | Resp {incident.response_phase}", "text")
         else:
-            self.text(1, 1, width - 2, "ASTER / " + self.schedules.compact_context(), "muted")
+            self.text(1, 1, width - 2, self.preset.upper() + " / " + self.schedules.compact_context(), "muted")
         if self.critical_incident is None:
-            self.text(1, 2, width - 2, "Y auto follow | Z pin | Enter follow | schedules: local fixed offsets", "muted")
+            self.text(1, 2, width - 2, "C: preset operations|showcase / schedules | Y/Z/Enter camera", "muted")
         self.draw_kpis(3)
         left_w = int(width * 0.64)
         right_x = left_w + 1
@@ -1207,7 +1217,7 @@ class CyberMonitor:
 
     def draw_shell_screen(self):
         width, height = self.canvas.width, self.canvas.height
-        px, py, pw, ph = self.panel(0, 0, width, height - 2, "OPERATIONS CONSOLE")
+        px, py, pw, ph = self.panel(0, 0, width, height - 2, "OPERATIONS CONSOLE / " + self.preset.upper())
         for i, line in enumerate(list(self.shell_history)[-max(0, ph - 2):]):
             self.text(px, py + i, pw, line, "text")
         self.text(px, height - 4, pw, f"analyst@monitor:~$ {self.shell_input}▏", "accent")
@@ -1218,6 +1228,7 @@ class CyberMonitor:
         if command == "help":
             self.shell_history.extend([
                 "status          Sensor health and current telemetry",
+                "preset [operations|showcase] Future pacing; active timing preserved",
                 "schedules [on|off] Local clocks, phases and future work control",
                 "jobs            Retained daily backup/maintenance jobs (64)",
                 "flows           Session identity, ports, state, bytes, packets and 1s rates",
@@ -1339,6 +1350,24 @@ class CyberMonitor:
                 self.shell_history.append("Use layer traffic|incidents|health|density")
                 return
             self.shell_history.append(f"Map layer: {self.map_layer}; {LEGENDS[self.map_layer]}")
+        elif command == "preset" or command.startswith("preset "):
+            parts = command.split()
+            try:
+                if len(parts) > 2:
+                    raise ValueError("Use preset [operations|showcase]")
+                previous = self.preset
+                if len(parts) == 2:
+                    self.incidents.set_preset(parts[1])
+                if previous != self.preset:
+                    self.log(f"Preset {self.preset}; active incident timing/evidence preserved; future work uses new preset",
+                             kind="preset")
+                self.shell_history.extend(textwrap.wrap(self.incidents.pacing.summary(
+                    self.simulation.now, self.incidents.next_start), width=72))
+                if self.critical_incident:
+                    self.shell_history.append(f"Active {self.critical_incident.identifier} retains "
+                                              f"{self.critical_incident.preset} x{self.critical_incident.timing_scale:g} timing")
+            except ValueError as error:
+                self.shell_history.append(str(error))
         elif command == "schedules" or command.startswith("schedules "):
             parts = command.split()
             if parts == ["schedules", "on"]:
@@ -1357,7 +1386,8 @@ class CyberMonitor:
                 self.shell_history.append("No daily jobs started in this simulation yet.")
         elif command == "status":
             self.shell_history.extend([
-                f"UTC {utc_text(self.clock_base + self.simulation.now)}; {self.schedules.compact_context()}",
+                f"Preset {self.preset}; UTC {utc_text(self.clock_base + self.simulation.now)}",
+                self.schedules.compact_context(),
                 f"Sensors: {self.sensors_online}/{len(CITIES)} healthy; degraded coverage shown on map",
                 f"Payload: {self.metrics['NET']:.4f} Mb/s / previous complete 1s bucket; "
                 f"total {self.simulation.total_bytes:,} bytes; no hidden aggregate",
@@ -1409,9 +1439,8 @@ class CyberMonitor:
             source, peer = ((incident.source_id, incident.peer_id) if incident else ("ATH-WS1", "EXT-DXB"))
             credential = incident.credential_id if incident else "aster.ws1"
             self.shell_history.extend([
-                ("Response preview: apply after 5 sim seconds, verify after another 3s."
-                 if incident and incident.variant == "delayed" else
-                 "Response preview: apply after 1 sim second, verify after another 1s."),
+                f"Response preview: apply after {(5 if incident and incident.variant == 'delayed' else 1) * (incident.timing_scale if incident else 1):g} sim seconds, "
+                f"verify after another {(3 if incident and incident.variant == 'delayed' else 1) * (incident.timing_scale if incident else 1):g}s.",
                 "block session FLOW-ID: this incident flow only; future flows allowed",
                 f"block peer {source} {peer}: egress to peer, including future flows",
                 f"isolate endpoint {source}: all local endpoint traffic, benign included",
@@ -1657,6 +1686,8 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="Simulation speed, clamped to 0.25–4.0.")
     parser.add_argument("--no-auto-follow", action="store_true", help="Start with automatic incident following disabled.")
     parser.add_argument("--pin-map", action="store_true", help="Pin the initial map against automatic camera motion.")
+    parser.add_argument("--preset", choices=OperatingPresets.NAMES, default="operations",
+                        help="Operations: calm workload opportunities; showcase: compressed family rotation.")
     parser.add_argument("--seed", type=int, help="Reproduce sessions/schedules; defaults to 2026-01-01 UTC.")
     parser.add_argument("--start-utc", type=parse_start_utc, help="Simulation start: epoch seconds or ISO UTC timestamp.")
     parser.add_argument("--scenario", choices=IncidentSimulation.VARIANTS + ("seeded",),
@@ -1671,7 +1702,7 @@ def main():
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed,
-                           not args.no_auto_follow, args.pin_map, args.scenario, args.start_utc)
+                           not args.no_auto_follow, args.pin_map, args.scenario, args.start_utc, args.preset)
     enable_windows_ansi()
     interval = 1 / args.fps
     last_size = None
