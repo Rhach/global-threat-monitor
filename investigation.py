@@ -222,6 +222,10 @@ class Investigation:
                   f"Credential={session.credential_id or 'none'}; policy stop={session.response_action_id or 'none'}",
                   f"Incident link: {session.incident_id or 'none'}" + (" (I opens incident)" if incident else ""),
                   "POLICY ACTIONS (modeled actuator lifecycle)"]
+        if session.schedule_context:
+            lines.insert(-1, "SCHEDULE CONTEXT: " + str(session.schedule_context))
+        if session.auth_result:
+            lines.insert(-1, f"Modeled authentication: {session.auth_result}; credential={session.credential_id}")
         if session.response_action_id and not any(a.identifier == session.response_action_id for a in matching):
             lines.append(f"Causal stop {session.response_action_id}: action details unavailable in bounded retention.")
         for action in matching:
@@ -290,6 +294,8 @@ class Investigation:
             lines.append("Linked incident unavailable; evicted from bounded incident archive.")
         if record.session_id and self.find_session(app, record.session_id) is None:
             lines.append("Linked session unavailable; evicted from bounded model history.")
+        if record.schedule_context:
+            lines.append("SCHEDULE CONTEXT: " + str(dict(record.schedule_context)))
         lines += self.coverage_lines(app, {record.collector_id}) if record.collector_id else []
         lines.append(record.message)
         return lines

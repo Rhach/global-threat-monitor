@@ -50,6 +50,8 @@ class Session:
         self.severity = "info" if connection.expected else "med"
         self.credential_id = None
         self.response_action_id = None
+        self.schedule_context = {}
+        self.auth_result = None
         if profile is not None:
             if profile != "outbound_bulk" or self.service != "HTTPS":
                 raise ValueError("Unsupported session profile: " + str(profile))
@@ -168,6 +170,7 @@ class SessionSimulation:
         self.sample_time = 1.0
         self.next_spawn = 0.0
         self.automatic = True
+        self.background_managed = False
         self.throughput = 0.0
         # Persistent scope is bounded by the finite asset/peer/credential catalog.
         # Session-only responses need no retained policy: flow IDs never recur.
@@ -219,7 +222,7 @@ class SessionSimulation:
         while self.now < target:
             boundary = min(target, self.sample_time,
                            next_boundary() if next_boundary else target,
-                           self.next_spawn if self.automatic else target,
+                           self.next_spawn if self.automatic and not self.background_managed else target,
                            min((s.started_at + s.lifetime for s in self.sessions), default=target))
             self.now = boundary
             for session in list(self.sessions):
@@ -244,7 +247,7 @@ class SessionSimulation:
                 self.sample_time += 1.0
                 if on_sample:
                     on_sample()
-            if self.automatic and boundary + 1e-9 >= self.next_spawn:
+            if self.automatic and not self.background_managed and boundary + 1e-9 >= self.next_spawn:
                 if len(self.sessions) < 5:
                     session = self.create()
                     if session is not None and on_created:
@@ -363,12 +366,15 @@ class Organization:
             ExpectedConnection("FRA-APP", "SIN-API", "HTTPS", "regional API"),
             ExpectedConnection("FRA-APP", "FRA-DNS", "DNS", "name resolution"),
             ExpectedConnection("FRA-BKP", "SIN-STORE", "BACKUP", "backup replication"),
+            ExpectedConnection("SIN-STORE", "FRA-BKP", "BACKUP", "backup replication"),
+            ExpectedConnection("SIN-API", "FRA-APP", "HTTPS", "regional application sync"),
+            ExpectedConnection("SIN-API", "FRA-DNS", "DNS", "name resolution"),
             ExpectedConnection("REM-LON", "FRA-APP", "HTTPS", "remote application"),
             ExpectedConnection("REM-UNK", "FRA-APP", "HTTPS", "remote application"),
         )
         self._connection_number = 0
         self.credentials = {"aster.ws1": "ATH-WS1", "aster.admin": "ATH-ADM",
-                            "aster.backup": "FRA-BKP"}
+                            "aster.backup": "FRA-BKP", "aster.cloud": "SIN-API"}
 
     def city_for(self, asset_id):
         """None is deliberately preserved for unknown geography."""
@@ -406,8 +412,16 @@ class Organization:
                           relationship.purpose if relationship else "outside configured peer/service baseline",
                           source.collector_id)
 
-    def choose_connection(self, unexpected=None):
+    def choose_connection(self, unexpected=None, source_sites=None, services=None):
         """Favor the baseline (90%); unfamiliar does not assert malicious intent."""
+        if source_sites is not None or services is not None:
+            entries = [entry for entry in self.expected_connections
+                       if (source_sites is None or self.assets[entry.source_id].site_id in source_sites)
+                       and (services is None or entry.service in services)]
+            if not entries:
+                return None
+            entry = self.rng.choice(entries)
+            return self.connect(entry.source_id, entry.peer_id, entry.service)
         if unexpected is None:
             unexpected = self.rng.random() < 0.10
         if unexpected:

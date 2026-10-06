@@ -23,6 +23,7 @@ class LogPayload:
     incident_id: str = ""
     session_id: str = ""
     action_id: str = ""
+    schedule_context: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class EventRecord:
     status: str = "info"
     lost_event_id: str = ""
     lost_occurred_at: float = None
+    schedule_context: tuple = ()
 
     @classmethod
     def observation(cls, observation):
@@ -61,7 +63,7 @@ class EventRecord:
         return cls(event.identifier, event.occurred_at, event.received_at, "telemetry", payload.message,
                    severity_name(payload.severity), event.collector_id, payload.source_id,
                    payload.peer_id, payload.service, payload.incident_id, payload.session_id,
-                   payload.action_id, payload.status)
+                   payload.action_id, payload.status, schedule_context=payload.schedule_context)
 
     @property
     def lag(self):

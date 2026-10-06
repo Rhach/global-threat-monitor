@@ -22,9 +22,8 @@ class DecisionDrill:
         self.opened_at = time.monotonic()
         self.world = factory(initial_theme=owner.theme_key, initial_sound=sound_enabled,
                              initial_speed=1.0, seed=self.SEED,
-                             initial_auto_follow=False, initial_pinned=True)
+                             initial_auto_follow=False, initial_pinned=True, start_utc=self.START_UTC)
         world = self.world
-        world.clock_base = self.START_UTC
         world.simulation.automatic = world.incidents.automatic = False
         self.incident = world.start_critical_incident(case)
         world.update(2 if case == "benign" else 49)

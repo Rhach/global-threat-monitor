@@ -27,6 +27,8 @@ class CollectorHealth:
     def __init__(self, identifier):
         self.identifier = identifier
         self.mode = "healthy"
+        self.control_owner = "baseline"
+        self.planned_maintenance = None
         self.now = self.last_heartbeat = 0.0
         self.delay = 0.0
         self.queue = deque()
@@ -76,7 +78,9 @@ class CollectorHealth:
         return (f"{self.identifier} {self.state}; heartbeat={self.last_heartbeat:.2f} "
                 f"age={self.now - self.last_heartbeat:.2f}s lag={self.lag:.2f}s "
                 f"queue={len(self.queue)}/{self.QUEUE_LIMIT} dropped={self.dropped} "
-                f"received={self.processed}; observed payload={payload}; CPU estimate={self.cpu:.1f}%")
+                f"received={self.processed}; observed payload={payload}; CPU estimate={self.cpu:.1f}%"
+                f"; mode={self.mode} owner={self.control_owner}; "
+                f"planned maintenance={self.planned_maintenance or 'none'}")
 
 
 class CollectorSimulation:
@@ -101,7 +105,7 @@ class CollectorSimulation:
         return min(self.next_heartbeat,
                    min((c.next_drain for c in self.collectors.values()), default=math.inf))
 
-    def set_mode(self, identifier, mode, now, delay=3.0):
+    def set_mode(self, identifier, mode, now, delay=3.0, owner="operator"):
         if identifier not in self.collectors:
             raise ValueError("Unknown collector ID; use collectors")
         if mode not in ("outage", "recovering", "delayed"):
@@ -113,10 +117,32 @@ class CollectorSimulation:
         self.advance_to(now)
         collector = self.collectors[identifier]
         collector.mode, collector.delay = mode, delay if mode == "delayed" else 0.0
+        collector.control_owner = owner
+        if mode == "recovering" and not collector.queue:
+            collector.mode = "healthy"
         if mode != "outage":
             collector.last_heartbeat = now
         collector.next_drain = now + collector.DRAIN_INTERVAL if collector.queue and mode != "outage" else math.inf
         return collector
+
+    def begin_maintenance(self, identifier, token, now, ends_at, ends_utc):
+        self.advance_to(now)
+        collector = self.collectors[identifier]
+        collector.planned_maintenance = (token, ends_at, ends_utc)
+        if collector.mode != "healthy":
+            return False
+        self.set_mode(identifier, "outage", now, owner=token)
+        return True
+
+    def end_maintenance(self, identifier, token, now):
+        self.advance_to(now)
+        collector = self.collectors[identifier]
+        if collector.planned_maintenance and collector.planned_maintenance[0] == token:
+            collector.planned_maintenance = None
+        if collector.control_owner != token:
+            return False
+        self.set_mode(identifier, "recovering", now, owner="baseline")
+        return True
 
     def submit(self, identifier, occurred_at, kind, payload, event_id=None):
         collector = self.collectors[identifier]

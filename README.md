@@ -73,7 +73,8 @@ python global-threat-monitor.py --no-sound
 --no-sound       Mute sound chimes
 --speed <mult>   Set speed multiplier. Clamped between 0.25 and 4.0
 --fps <10-60>    Set rendering rate. Default 30; use 15 for slower terminals
---seed <int>     Reproduce session selection, ports and background schedule
+--seed <int>     Reproduce sessions/schedules; starts at 2026-01-01 UTC
+--start-utc <UTC> ISO UTC timestamp or epoch seconds for the simulation start
 --scenario <variant> Start exfiltration, credential-misuse, lateral-movement or a lookalike
 --no-auto-follow Start with automatic incident follow disabled
 --pin-map        Pin the initial map against automatic camera motion
@@ -114,7 +115,7 @@ G         Start a decision exercise; inspect, preview a scope, Enter confirms
 -         Decrease speed
 ```
 
-In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `drill [exfiltration|benign|partial]`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations; `nuke-gibson` starts the default decision exercise. Ctrl+C quits from any view.
+In the console, enter `help`, `status`, `flows`, `flow-history`, `sessions`, `org`, `baseline`, `unfamiliar`, `scenario [variant]`, `incident`, `timeline [N]`, `incidents`, `response`, `actions`, `dismiss [reason]`, `drill [exfiltration|benign|partial]`, `schedules [on|off]`, `jobs`, `collectors [ID]`, `outage COL-ID`, `recover COL-ID`, `delay COL-ID [seconds]`, `clear`, or `exit`. `response` previews explicit action commands and their scope. The old `enhance`, `ddos-localhost`, and `nuke-gibson` commands still work as local simulations; `nuke-gibson` starts the default decision exercise. Ctrl+C quits from any view.
 
 Use `scenario credential-misuse` or `scenario lateral-movement` to select those
 families. `scenario credential-benign` and `scenario lateral-benign` select their
@@ -131,8 +132,9 @@ from documentation ranges. `org` lists these facts and the configured source,
 peer, service, and purpose of each expected relationship. Catalogs persist for
 the running session across redraws and map navigation; they are not saved to disk.
 
-Ordinary background activity and `A` choose from the same catalog, favoring
-expected peer/service relationships 90% of the time. For example, `ATH-WS1`
+Ordinary background activity follows site-local workload calendars and uses
+configured expected peer/service relationships. `A` manually samples the same
+organization catalog, favoring expected relationships 90% of the time. For example, `ATH-WS1`
 normally reaches `FRA-APP` over HTTPS, or `FRA-DNS` for name resolution.
 `NEW` means the peer/service is outside that asset's configured baseline and
 needs review. It does not prove malicious intent or imply an automatic block;
@@ -429,8 +431,8 @@ hypothesis, reducing confidence to `low` and changing assessment to `authorized
 transfer`. It does not rewrite the initial alert or stop the legitimate backup.
 Inspect `incident` and `timeline 3`, then enter `dismiss approved JOB-FRA-SIN-001`.
 The disposition becomes `dismissed`, while bytes continue until normal session
-completion at 32s. This is a single modeled scheduled job; daily workload
-schedules are a later slice.
+completion at 32s. This scenario uses the fixed job `JOB-FRA-SIN-001`; ordinary
+daily backups use separate site/day job identities and the same session model.
 
 `dismiss [reason]` applies no network policy. Incorrect dismissal of suspicious
 activity leaves later sessions, bytes and stronger observations visible. The
@@ -449,8 +451,8 @@ Block or revoke that alternate session to verify full cessation; the first
 partial result stays in the timeline. If it finishes naturally, its historical
 transferred bytes and unresolved risk remain.
 
-Explicit credentials are `aster.ws1` (`ATH-WS1`), `aster.admin` (`ATH-ADM`), and
-`aster.backup` (`FRA-BKP`). These assets are configured credential owners;
+Explicit credentials are `aster.ws1` (`ATH-WS1`), `aster.admin` (`ATH-ADM`),
+`aster.backup` (`FRA-BKP`), and `aster.cloud` (`SIN-API`). These assets are configured credential owners;
 modeled credential reuse can originate elsewhere. Revocation matches the actual
 identity on a session, regardless of the source asset. Pause
 freezes variant/response delays, speed scales them, and FPS changes no outcome.
@@ -1136,3 +1138,86 @@ The demo stops the same upload at 12,000,000 originator bytes with either action
 By training time 61s, the scoped block preserves the completed legitimate HTTPS
 session's 723,600 payload bytes; broad isolation stops it at 169,200 bytes and
 records the causal policy. It also demonstrates the authorized backup dismissal.
+
+
+## Daily workload calendars
+
+Ordinary workload now follows site-local calendars on the same simulation clock
+as sessions, collector delivery and incident evidence. The dashboard shows the
+UTC date/time; `schedules` shows each site's local date/time, active phase and
+owner. Fixed fictional offsets avoid operating-system timezone or DST data:
+
+| Site | Offset | Role |
+| --- | --- | --- |
+| ATH | UTC+02:00 | Athens office |
+| FRA | UTC+01:00 | Frankfurt data center |
+| SIN | UTC+08:00 | Singapore cloud |
+| REM | UTC+00:00 | Remote-user scheduling reference; asset geography may be unknown |
+
+Each site is quiet from 18:00 through 08:00 local time, has morning DNS/HTTPS
+bursts from 08:00 to 09:00, and slower DNS/HTTPS/SSH work from 09:00 to 18:00.
+Eligible relationships determine which services actually occur at a site. Each
+site has its own spawn cadence: morning attempts every 1–2 simulation seconds,
+work attempts every 8–15 seconds, sharing the existing five-session background
+target and twelve-session hard limit. Quiet periods create no ordinary sessions;
+already active sessions and independently triggered incidents can continue.
+Morning HTTPS sessions with a configured owner credential record modeled
+accepted/rejected authentication on that actual session; DNS is not described
+as authentication. Singapore has explicit expected application and resolver
+relationships, so its morning activity originates in Singapore.
+
+Frankfurt and Singapore each run one approved daily backup during the local
+02:00–02:05 start window. Frankfurt replicates `FRA-BKP > SIN-STORE`; Singapore
+replicates `SIN-STORE > FRA-BKP`. The 30s BACKUP/TLS session uses the existing
+2,000,000B/s outgoing and 10,000B/s incoming profile: 60,300,000B on normal
+completion, with a 16.08Mb/s complete traffic bucket. The backup creates real
+flow/event identities and collector payload/load, never an independent synthetic
+throughput spike. The source site, owner, expected peer/service, purpose,
+scheduled UTC and stable `JOB-BACKUP-SITE-YYYY-MM-DD` identity stay in flow
+details and frozen received-event metadata. `jobs` lists the last 64 backup and
+maintenance records, including running bytes, start/end UTC, collector and
+session IDs. Capacity pressure retries within the five-minute window, then
+records a missed job; incident reservations remain available. Ordinary calendar
+spawns never randomly select a backup. `A`, `sessions` and scenario commands
+remain explicit manual demonstrations through the common session API.
+
+ATH, FRA and SIN have planned collector maintenance from local 03:00 to 03:05.
+`collectors COL-ATH` (or another collector ID) shows the planned window separately
+from actual mode, health, and control owner. Missing payload/observations, stale
+heartbeats and recovery backlog retain the existing collector behavior. The
+maintenance job recovers only the outage it owns. An operator's outage or delay
+set before or during the window remains in effect until operator recovery;
+the planned window cannot overwrite or heal it. Once operator recovery fully
+returns a collector to healthy, future daily maintenance can run normally.
+
+Use `schedules off` to stop future ordinary spawning and daily job starts;
+`schedules on` resumes the current local phase. Already started sessions finish,
+and a maintenance job still cleans up its own lease at the planned end. Pause
+freezes all schedule progression; speed changes elapsed simulation time; FPS
+and camera motion change no workload facts. Day identities prevent duplicate
+jobs within a local day, using one retained last-day value per finite site/job
+pair rather than an ever-growing deduplication set. The simulation API's
+`simulation.automatic = False` also disables future calendar work, preserving
+isolated demonstrations and decision exercises.
+
+With `--seed`, the default start is `2026-01-01T00:00:00Z` for reproducible
+local phases. Without a seed or explicit start, the host's current UTC time is
+used. `--start-utc` accepts nonnegative finite epoch seconds or an ISO timestamp
+with an explicit zero UTC offset. For example, run:
+
+```bash
+python3 global-threat-monitor.py --seed 12 --start-utc 2026-01-01T00:59:59Z
+python3 demo_schedules.py
+python3 demo_schedules.py --day  # One uninterrupted 24h UTC world, no rendering/waits
+python3 -m unittest -v test_workload_schedules
+```
+
+The dashboard example reaches the Frankfurt backup and Athens maintenance
+window after one simulation second. The offline demo replays overnight,
+Singapore morning, Frankfurt morning with other sites working, backup payload
+and collector load, planned versus operator outages, local midnight and the
+following day's distinct backup identity. `--day` advances one continuous world
+through a full UTC day with two backups and three collector windows; it takes
+CPU time to integrate the one-second payload and heartbeat buckets. Fixed-clock fixtures also check
+pause/speed, update/render partition invariance, bounded job history, deferred
+and missed jobs, retained context, and repeated daily maintenance recovery.

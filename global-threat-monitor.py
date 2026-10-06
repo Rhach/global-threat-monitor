@@ -26,6 +26,7 @@ from investigation import Investigation
 from decision_drill import DecisionDrill
 from investigation_catalog import EventCatalog, EventRecord, LogPayload
 from simulation_model import Organization, SessionSimulation, valid_advance
+from workload_schedules import WorkloadSchedules, SEEDED_START_UTC, parse_start_utc, utc_text
 
 APP_NAME = "Global Threat Monitor"
 APP_VERSION = "4.0.0"
@@ -478,7 +479,7 @@ def clamp_speed(value):
 
 class CyberMonitor:
     def __init__(self, initial_theme=None, initial_sound=False, initial_speed=1.0,
-                 seed=None, initial_auto_follow=True, initial_pinned=False, initial_scenario=None):
+                 seed=None, initial_auto_follow=True, initial_pinned=False, initial_scenario=None, start_utc=None):
         theme = initial_theme or load_config().get("theme", "ice")
         self.theme_key = theme if theme in THEMES else "ice"
         self.palette = THEMES[self.theme_key]
@@ -499,7 +500,8 @@ class CyberMonitor:
         self.boot_time = time.monotonic()
         self.last_map_interaction = self.boot_time
         self.last_auto_zoom = self.boot_time
-        self.clock_base = time.time()
+        self.clock_base = (parse_start_utc(start_utc) if start_utc is not None else
+                           SEEDED_START_UTC if seed is not None else time.time())
         self.attacks = []
         self.collectors = CollectorSimulation(self.organization.collectors, self.deliver_telemetry,
                                               self.telemetry_loss)
@@ -522,6 +524,8 @@ class CyberMonitor:
         self.blocked = 0
         self.response_counts = {"block": 0, "isolate": 0, "revoke": 0}
         self.rule_hits = [0, 0, 0, 0]
+        self.schedules = WorkloadSchedules(self.simulation, self.collectors, self.clock_base,
+                                           self.add_session_route, self.log_schedule, seed=seed)
         self.last_eps = 0
         audio.muted = not initial_sound
         self.log("Offline simulation ready / session payload traffic; no background aggregate")
@@ -683,13 +687,14 @@ class CyberMonitor:
                                observation.identifier)
 
     def submit_log(self, collector_id, message, status="info", severity="INFO", occurred_at=None,
-                   connection=None, incident_id="", session_id="", action_id=""):
+                   connection=None, incident_id="", session_id="", action_id="", schedule_context=()):
         self.collectors.advance_to(self.simulation.now)
         occurred_at = self.simulation.now if occurred_at is None else occurred_at
         payload = LogPayload(message, status, severity,
                              connection.source_id if connection else "",
                              connection.peer_id if connection else "",
-                             connection.service if connection else "", incident_id, session_id, action_id)
+                             connection.service if connection else "", incident_id, session_id, action_id,
+                             tuple(schedule_context))
         self.collectors.submit(collector_id, occurred_at, "log", payload)
 
     def deliver_telemetry(self, event):
@@ -717,16 +722,22 @@ class CyberMonitor:
                                           kind="loss", source_id=lost.source_id, peer_id=lost.peer_id,
                                           service=lost.service, incident_id=lost.incident_id,
                                           session_id=lost.session_id, action_id=lost.action_id,
-                                          lost_event_id=event.identifier, lost_occurred_at=event.occurred_at)
+                                          lost_event_id=event.identifier, lost_occurred_at=event.occurred_at,
+                                          schedule_context=lost.schedule_context)
         self.log(message, "warn", "HIGH", record=notice)
 
     def next_simulation_boundary(self):
-        return min(self.incidents.next_boundary(), self.collectors.next_boundary())
+        return min(self.incidents.next_boundary(), self.collectors.next_boundary(),
+                   self.schedules.next_boundary())
 
     def process_simulation_boundary(self):
         self.collectors.advance_to(self.simulation.now)
         self.incidents.process_boundary()
+        self.schedules.process_boundary()
         self.sync_incident_camera()
+
+    def log_schedule(self, message):
+        self.log(message, kind="schedule")
 
     def incident_coverage(self, incident):
         identifiers = {self.organization.assets[incident.source_id].collector_id}
@@ -762,10 +773,16 @@ class CyberMonitor:
         """A peer observation shares the same persistent context as its route."""
         occurred_at = self.simulation.now if timestamp is None else timestamp - self.clock_base
         session = session or self.investigation.find_session(self, connection.identifier)
-        self.submit_log(connection.collector_id, self.organization.describe(connection),
+        context = tuple(sorted(session.schedule_context.items())) if session else ()
+        message = self.organization.describe(connection)
+        if session and session.schedule_context:
+            message += " / schedule=" + str(session.schedule_context)
+        if session and session.auth_result:
+            message += f" / modeled auth {session.auth_result} credential={session.credential_id}"
+        self.submit_log(connection.collector_id, message,
                         "info" if connection.expected else "warn", "INFO" if connection.expected else "MED", occurred_at,
                         connection=connection, session_id=connection.identifier,
-                        incident_id=session.incident_id or "" if session else "")
+                        incident_id=session.incident_id or "" if session else "", schedule_context=context)
 
     def toggle_theme(self):
         keys = list(THEMES)
@@ -791,7 +808,8 @@ class CyberMonitor:
             self.submit_log(connection.collector_id,
                             f"{connection.identifier} denied / {session.response_action_id} / zero bytes", "success",
                             connection=connection, incident_id=session.incident_id or "",
-                            session_id=session.identifier, action_id=session.response_action_id or "")
+                            session_id=session.identifier, action_id=session.response_action_id or "",
+                            schedule_context=tuple(sorted(session.schedule_context.items())))
             return None
         route = AttackVector(self.organization.city_for(connection.source_id),
                              self.organization.city_for(connection.peer_id),
@@ -814,7 +832,8 @@ class CyberMonitor:
         self.submit_log(collector.identifier,
                         f"{self.organization.context(session.connection)} / {session.summary()}{incident}{assessment}",
                         connection=session.connection, incident_id=session.incident_id or "",
-                        session_id=session.identifier, action_id=session.response_action_id or "")
+                        session_id=session.identifier, action_id=session.response_action_id or "",
+                        schedule_context=tuple(sorted(session.schedule_context.items())))
 
     def sample_telemetry(self):
         traffic = self.simulation.throughput
@@ -1146,7 +1165,7 @@ class CyberMonitor:
             return
         self.text(1, 0, width - 2, "GLOBAL THREAT MONITOR", "accent")
         state = "PAUSED" if self.paused else "LIVE"
-        header = f"{state}  /  {self.timestamp()} UTC"
+        header = f"{state} {utc_text(self.clock_base + self.simulation.now)[:-1]} UTC"
         self.text(width - len(header) - 1, 0, len(header), header, "muted")
         self.text(23, 0, max(0, width - len(header) - 25),
                   f"{self.camera_state} A:{'on' if self.auto_follow else 'off'} Y/Z/Enter", "muted")
@@ -1163,7 +1182,9 @@ class CyberMonitor:
                       f"Sev {incident.severity} | Conf {incident.confidence} | "
                       f"Disp {incident.disposition} | Resp {incident.response_phase}", "text")
         else:
-            self.text(1, 1, width - 2, "ASTER OPERATIONS / ATH office / FRA data center / SIN cloud / REM users", "muted")
+            self.text(1, 1, width - 2, "ASTER / " + self.schedules.compact_context(), "muted")
+        if self.critical_incident is None:
+            self.text(1, 2, width - 2, "Y auto follow | Z pin | Enter follow | schedules: local fixed offsets", "muted")
         self.draw_kpis(3)
         left_w = int(width * 0.64)
         right_x = left_w + 1
@@ -1197,6 +1218,8 @@ class CyberMonitor:
         if command == "help":
             self.shell_history.extend([
                 "status          Sensor health and current telemetry",
+                "schedules [on|off] Local clocks, phases and future work control",
+                "jobs            Retained daily backup/maintenance jobs (64)",
                 "flows           Session identity, ports, state, bytes, packets and 1s rates",
                 "sessions        Start DNS, HTTPS, SSH and backup demonstration",
                 "flow-history    Completed session summaries (last 120)",
@@ -1316,8 +1339,25 @@ class CyberMonitor:
                 self.shell_history.append("Use layer traffic|incidents|health|density")
                 return
             self.shell_history.append(f"Map layer: {self.map_layer}; {LEGENDS[self.map_layer]}")
+        elif command == "schedules" or command.startswith("schedules "):
+            parts = command.split()
+            if parts == ["schedules", "on"]:
+                self.schedules.enabled = True
+            elif parts == ["schedules", "off"]:
+                self.schedules.enabled = False
+            elif len(parts) != 1:
+                self.shell_history.append("Use schedules [on|off]")
+                return
+            for line in self.schedules.context_lines():
+                self.shell_history.extend(textwrap.wrap(line, width=72))
+        elif command == "jobs":
+            for job in self.schedules.jobs:
+                self.shell_history.extend(textwrap.wrap(job.summary(self.clock_base), width=72))
+            if not self.schedules.jobs:
+                self.shell_history.append("No daily jobs started in this simulation yet.")
         elif command == "status":
             self.shell_history.extend([
+                f"UTC {utc_text(self.clock_base + self.simulation.now)}; {self.schedules.compact_context()}",
                 f"Sensors: {self.sensors_online}/{len(CITIES)} healthy; degraded coverage shown on map",
                 f"Payload: {self.metrics['NET']:.4f} Mb/s / previous complete 1s bucket; "
                 f"total {self.simulation.total_bytes:,} bytes; no hidden aggregate",
@@ -1617,7 +1657,8 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="Simulation speed, clamped to 0.25–4.0.")
     parser.add_argument("--no-auto-follow", action="store_true", help="Start with automatic incident following disabled.")
     parser.add_argument("--pin-map", action="store_true", help="Pin the initial map against automatic camera motion.")
-    parser.add_argument("--seed", type=int, help="Reproduce organization peer/service selection.")
+    parser.add_argument("--seed", type=int, help="Reproduce sessions/schedules; defaults to 2026-01-01 UTC.")
+    parser.add_argument("--start-utc", type=parse_start_utc, help="Simulation start: epoch seconds or ISO UTC timestamp.")
     parser.add_argument("--scenario", choices=IncidentSimulation.VARIANTS + ("seeded",),
                         help="Start a correlated incident family/variant immediately; F defaults to exfiltration.")
     parser.add_argument("--fps", type=int, choices=range(10, 61), metavar="10-60", default=30,
@@ -1630,7 +1671,7 @@ def main():
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     monitor = CyberMonitor(args.theme, args.sound and not args.no_sound, args.speed, args.seed,
-                           not args.no_auto_follow, args.pin_map, args.scenario)
+                           not args.no_auto_follow, args.pin_map, args.scenario, args.start_utc)
     enable_windows_ansi()
     interval = 1 / args.fps
     last_size = None
