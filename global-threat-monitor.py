@@ -891,6 +891,15 @@ class CyberMonitor:
     def text(self, x, y, width, value, color="text"):
         self.canvas.write_str(x, y, str(value)[:max(0, width)], self.palette[color])
 
+    def status_row(self, y, info, controls, compact_controls, color="muted"):
+        width = self.canvas.width - 2
+        if len(info) + len(controls) + 2 > width:
+            controls = compact_controls
+        controls = controls[:max(0, width)]
+        controls_x = self.canvas.width - len(controls) - 1
+        self.text(1, y, max(0, controls_x - 3), info, color)
+        self.text(controls_x, y, len(controls), controls, "muted")
+
     def draw_kpis(self, y):
         width = self.canvas.width
         cards = [
@@ -1192,28 +1201,34 @@ class CyberMonitor:
                       f"Sev {incident.severity} | Conf {incident.confidence} | "
                       f"Disp {incident.disposition} | Resp {incident.response_phase}", "text")
         else:
-            self.text(1, 1, width - 2, self.preset.upper() + " / " + self.schedules.compact_context(), "muted")
-        if self.critical_incident is None:
-            self.text(1, 2, width - 2, "C: preset operations|showcase / schedules | Y/Z/Enter camera", "muted")
-        self.draw_kpis(3)
+            self.status_row(1, self.preset.upper() + " / " + self.schedules.compact_context(),
+                            "C: preset operations|showcase / schedules | Y/Z/Enter camera",
+                            "C console")
+        kpi_y = 3 if self.critical_incident is not None else 2
+        self.draw_kpis(kpi_y)
         left_w = int(width * 0.64)
         right_x = left_w + 1
         right_w = width - right_x
-        content_h = height - 11
+        map_y = kpi_y + 5
+        content_h = height - map_y - 2
         top_h = max(7, int(content_h * 0.61))
-        lower_y = 9 + top_h
-        lower_h = height - 2 - lower_y
-        self.draw_map(0, 8, left_w, top_h)
-        self.draw_health(right_x, 8, right_w, top_h)
+        lower_y = map_y + top_h + 1
+        lower_h = height - 1 - lower_y
+        self.draw_map(0, map_y, left_w, top_h)
+        self.draw_health(right_x, map_y, right_w, top_h)
         self.draw_events(0, lower_y, left_w, lower_h)
         self.draw_flows(right_x, lower_y, right_w, lower_h)
-        self.text(1, height - 1, width - 2, "E flows | I incident | V archive | O events | C console | P pause | Q quit", "muted")
-        if not self.investigation.filters.values:
+        if self.investigation.filters.values:
+            info = "Filters: " + self.investigation.filters.label() + " | O inspect/X clear"
+            color = "accent"
+        else:
             legend = (LEGENDS["health"] if self.map_layer == "health" else
                       "• normal ◆ suspected ✓ contained ! stale x offline")
-            self.text(1, height - 2, width - 2, f"Map {self.map_layer} / W layer | {legend}", "muted")
-        if self.investigation.filters.values:
-            self.text(1, height - 2, width - 2, "Filters: " + self.investigation.filters.label() + " | O inspect/X clear", "accent")
+            info = f"Map {self.map_layer} / W layer | {legend}"
+            color = "muted"
+        self.status_row(height - 1, info,
+                        "E flows | I incident | V archive | O events | C console | P pause | Q quit",
+                        "E/I/V/O inspect | C console | P pause | Q quit", color)
 
     def draw_shell_screen(self):
         width, height = self.canvas.width, self.canvas.height
