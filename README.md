@@ -28,7 +28,7 @@ Do not use it to assess security posture, impress auditors, diagnose incidents, 
 
 ## Disclaimer 2
 
-I did not write a single line of code on this. Because burning forests and expending energy in 2026 is not about productivity. It is about sending a message. Peak humanity.
+I did not write a single line of code on this. Because burning forests, boiling water and expending energy in 2026 is not about productivity. It is about sending a message, just to show nature who's the boss.
 
 ---
 
