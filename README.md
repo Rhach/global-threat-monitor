@@ -24,7 +24,7 @@ More options: `python3 global-threat-monitor.py --help`.
 
 This is not a cybersecurity tool. This is fake. All displayed activity and metrics are simulated.
 
-Do not use it to assess security posture, impress auditors, diagnose incidents, or convince management that the blinking red thing means progress. Or do, but in that case, it is between you, your conscience, and the very tired incident response team that will eventually be asked to recreate the said blinking red thing in Splunk.
+Do not use it to assess security posture, impress auditors, diagnose incidents, or convince management that the blinking red thing means progress. Or do, but in that case, it is between you, your conscience, and the very tired incident response team that will eventually be asked to recreate the said blinking red thing in Splunk before the Q3 audit.
 
 ## Disclaimer 2
 
